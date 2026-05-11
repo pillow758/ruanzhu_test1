@@ -213,6 +213,7 @@ def trigger_change_address(routes, node_dict, target_id, new_x, new_y):
 
 # ====================== 4. 主程序模拟 ======================
 if __name__ == "__main__":
+    
     # 导入测试数据 (模拟您的客户坐标和订单汇总)
     node_dict = {'DC': Node('DC', 20, 20, 0)}
     raw_customers = [

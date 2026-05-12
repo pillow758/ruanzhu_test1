@@ -1,5 +1,5 @@
-import json
-import os
+from database.db_manager import verify_user
+from database.db_manager import register_user
 import random
 import sys
 from PyQt6.QtWidgets import (
@@ -11,28 +11,47 @@ from PyQt6.QtGui import QPainter, QBrush, QColor, QPen, QLinearGradient, QPainte
 from PyQt6.QtMultimedia import QMediaPlayer, QMediaFormat
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
-USER_FILE = 'users.json'
+# ====================== 动态流光背景 ======================
+class FlowBackground(QWidget):
+    """用于绘制动态渐变背景，替换视频层，避免黑屏"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.offset = 0
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_gradient)
+        self.timer.start(50)  # 20fps 流光效果
 
-# ====================== 用户数据初始化 ======================
-def init_user_file():
-    if not os.path.exists(USER_FILE):
-        with open(USER_FILE, 'w', encoding='utf-8') as f:
-            json.dump({}, f)
+    def update_gradient(self):
+        self.offset = (self.offset + 2) % 100
+        self.update()
 
-def load_users():
-    with open(USER_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-def save_users(users):
-    with open(USER_FILE, 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=4, ensure_ascii=False)
-
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # 创建动态渐变
+        gradient = QLinearGradient(0, 0, self.width(), self.height())
+        # 随偏移变化的颜色
+        pos1 = (self.offset / 100.0)
+        pos2 = (self.offset + 30) / 100.0
+        pos3 = (self.offset + 70) / 100.0
+        gradient.setColorAt(0, QColor(15, 23, 42))      # #0f172a
+        gradient.setColorAt(pos1, QColor(30, 27, 75))   # #1e1b4b
+        gradient.setColorAt(pos2, QColor(46, 16, 101))  # #2e1065
+        gradient.setColorAt(pos3, QColor(2, 6, 23))     # #020617
+        gradient.setColorAt(1, QColor(15, 23, 42))
+        painter.fillRect(self.rect(), gradient)
+        # 绘制一些光晕线条（科技感）
+        painter.setPen(QPen(QColor(96, 165, 250, 80), 2))
+        for i in range(0, self.width(), 60):
+            painter.drawLine(i, 0, i + self.offset, self.height())
+            
 # ====================== 粒子动画组件 ======================
 class ParticleWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # 让鼠标穿透
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)  # 让鼠标穿透
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)    # 透明背景
+        self.setAutoFillBackground(False)
         self.particles = []
         self.particle_count = 80
         self.timer = QTimer()
@@ -113,30 +132,13 @@ class ParticleWidget(QWidget):
 class LoginWindow(QWidget):
     def __init__(self, success_callback):
         super().__init__()
-        init_user_file()
         self.success_callback = success_callback
-        self.setWindowTitle("物流配送系统 - 霓虹极客版")
+        self.setWindowTitle("物流配送系统by pillow")
         self.resize(480, 600)
         self.setMinimumSize(400, 500)
 
-        # 1. 视频背景层 (底层)
-        self.video_widget = QVideoWidget(self)
-        self.media_player = QMediaPlayer()
-        self.media_player.setVideoOutput(self.video_widget)
-        # 尝试加载背景视频，请确保目录下存在 "background.mp4" 文件，若无则显示渐变占位
-        video_path = "background.mp4"
-        if os.path.exists(video_path):
-            self.media_player.setSource(QUrl.fromLocalFile(os.path.abspath(video_path)))
-            self.media_player.setLoops(QMediaPlayer.Infinite)
-            self.media_player.play()
-        else:
-            # 降级：显示动态霓虹渐变 (依然科技感)
-            self.video_widget.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0f172a, stop:0.5 #1e1b4b, stop:1 #020617);")
-            # 增加动态流光效果模拟视频
-            self.gradient_timer = QTimer()
-            self.gradient_timer.timeout.connect(self.update_gradient_effect)
-            self.gradient_timer.start(80)
-            self.gradient_offset = 0
+         # 1. 底层：动态流光背景
+        self.bg_widget = FlowBackground(self)
 
         # 2. 粒子动画层 (中层，浮于视频之上)
         self.particle_widget = ParticleWidget(self)
@@ -149,7 +151,6 @@ class LoginWindow(QWidget):
                 background: rgba(15, 25, 45, 0.65);
                 border-radius: 28px;
                 border: 1px solid rgba(96, 165, 250, 0.4);
-                box-shadow: 0 0 20px rgba(96, 165, 250, 0.3);
             }
         """)
         self.init_panel_ui()          # 构建登录控件
@@ -170,7 +171,6 @@ class LoginWindow(QWidget):
             }
             QLineEdit:focus {
                 border: 2px solid #60a5fa;
-                box-shadow: 0 0 12px #3b82f6;
                 background: rgba(30, 41, 59, 0.95);
             }
             QPushButton {
@@ -184,7 +184,6 @@ class LoginWindow(QWidget):
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #3b82f6, stop:1 #60a5fa);
-                box-shadow: 0 0 16px #3b82f6;
             }
             QPushButton:pressed {
                 background: #1e40af;
@@ -192,19 +191,27 @@ class LoginWindow(QWidget):
             QLabel {
                 color: #e2e8f0;
             }
+            QMessageBox {
+                background-color: #1e293b;
+            }
+            QMessageBox QLabel {
+                color: #f1f5f9;
+            }
+            QMessageBox QPushButton {
+                background: #3b82f6;
+                border-radius: 8px;
+                padding: 8px 20px;
+                min-width: 80px;
+            }
         """)
 
-        self.apply_neon_effects()     # 增加额外发光标签效果
+        # 调整层级顺序：背景在最下，粒子中间，面板最上
+        self.bg_widget.lower()
+        self.particle_widget.raise_()
+        self.panel.raise_()
 
-    def update_gradient_effect(self):
-        """视频缺失时，动态改变渐变偏移，产生流光动画"""
-        self.gradient_offset = (self.gradient_offset + 5) % 100
-        grad_style = f"""
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-            stop:0 #0f172a, stop:{self.gradient_offset/100} #1e1b4b,
-            stop:0.6 #2e1065, stop:1 #020617);
-        """
-        self.video_widget.setStyleSheet(grad_style)
+        # 安装事件过滤器，确保窗口缩放时控件自适应
+        self.resize(self.size())  # 触发一次 resizeEvent
 
     def apply_neon_effects(self):
         # 创建标题霓虹文本效果
@@ -214,14 +221,12 @@ class LoginWindow(QWidget):
             color: #60a5fa;
             background: transparent;
             qproperty-alignment: AlignCenter;
-            text-shadow: 0 0 12px #3b82f6, 0 0 5px #1e3a8a;
         """)
         self.subtitle_label.setStyleSheet("""
             font-size: 15px;
             color: #b9e0ff;
             background: transparent;
             qproperty-alignment: AlignCenter;
-            text-shadow: 0 0 5px #3b82f6;
         """)
 
     def init_panel_ui(self):
@@ -229,11 +234,11 @@ class LoginWindow(QWidget):
         panel_layout = QVBoxLayout()
         panel_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         panel_layout.setSpacing(20)
-        panel_layout.setContentsMargins(40, 40, 40, 40)
+        panel_layout.setContentsMargins(60, 60, 60, 60)
 
         # 标题 + 副标题
-        self.title_label = QLabel("🚚 物流星轨 · 智控系统")
-        self.subtitle_label = QLabel("超维度调度平台 | 霓虹科技引擎")
+        self.title_label = QLabel("🚚 物流系统")
+        self.subtitle_label = QLabel("超维度调度平台 ")
         panel_layout.addWidget(self.title_label)
         panel_layout.addWidget(self.subtitle_label)
         panel_layout.addSpacing(20)
@@ -242,11 +247,13 @@ class LoginWindow(QWidget):
         self.username_edit = QLineEdit()
         self.username_edit.setPlaceholderText("⚡ 用户名 / 手机号")
         self.username_edit.setMinimumHeight(48)
+        self.username_edit.setMaximumWidth(500)
 
         self.password_edit = QLineEdit()
         self.password_edit.setPlaceholderText("🔒 密码")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setMinimumHeight(48)
+        self.password_edit.setMaximumWidth(500)
 
         panel_layout.addWidget(self.username_edit)
         panel_layout.addWidget(self.password_edit)
@@ -270,32 +277,41 @@ class LoginWindow(QWidget):
         panel_layout.addWidget(line)
 
         self.panel.setLayout(panel_layout)
-
+    
     def resizeEvent(self, event):
-        """自适应布局：视频背景、粒子层、面板大小随窗口改变"""
+        """自适应布局：背景、粒子层、面板大小随窗口改变"""
         new_size = event.size()
-        # 视频背景完全填充窗口
-        self.video_widget.setGeometry(QRect(0, 0, new_size.width(), new_size.height()))
+        # 动态流光背景完全填充窗口
+        self.bg_widget.setGeometry(QRect(0, 0, new_size.width(), new_size.height()))
         # 粒子层完全填充窗口
         self.particle_widget.setGeometry(QRect(0, 0, new_size.width(), new_size.height()))
-        # 控制面板居中，占据80%宽度，高度自适应但不超过窗口90%
-        panel_width = int(new_size.width() * 0.78)
-        panel_height = min(int(new_size.height() * 0.72), self.panel.sizeHint().height() + 80)
-        panel_x = (new_size.width() - panel_width) // 2
-        panel_y = (new_size.height() - panel_height) // 2
-        self.panel.setGeometry(panel_x, panel_y, panel_width, panel_height)
+        # 控制面板铺满整个窗口
+        self.panel.setGeometry(0, 0, new_size.width(), new_size.height())
         super().resizeEvent(event)
 
     def login(self):
         username = self.username_edit.text().strip()
         password = self.password_edit.text().strip()
-        users = load_users()
-        if username in users and users[username] == password:
-            QMessageBox.information(self, "授权成功", "身份验证通过，正在进入智控中心...")
+        success, role = verify_user(username, password)
+        
+        if success:
+            QMessageBox.information(
+                self,
+                "成功",
+                f"登录成功！当前权限：{role}"
+            )
+
             self.close()
-            self.success_callback()
+
+            self.success_callback(username, role)
+
         else:
-            QMessageBox.warning(self, "接入失败", "用户名或密码错误，请重新输入")
+
+            QMessageBox.warning(
+                self,
+                "失败",
+                "用户名或密码错误"
+            )
 
     def register(self):
         username = self.username_edit.text().strip()
@@ -303,19 +319,29 @@ class LoginWindow(QWidget):
         if not username or not password:
             QMessageBox.warning(self, "错误", "用户名和密码不能为空！")
             return
-        users = load_users()
-        if username in users:
-            QMessageBox.warning(self, "错误", "用户名已存在！")
-            return
-        users[username] = password
-        save_users(users)
-        QMessageBox.information(self, "成功", "注册成功，请登录！")
+        success, msg = register_user(username, password)
+        if success:
+
+            QMessageBox.information(
+                self,
+                "成功",
+                msg
+            )
+
+        else:
+
+            QMessageBox.warning(
+                self,
+                "失败",
+                msg
+            )
 
     def closeEvent(self, event):
-        # 清理资源：停止媒体播放和粒子定时器
-        self.media_player.stop()
-        if hasattr(self, 'gradient_timer'):
-            self.gradient_timer.stop()
+        # 清理资源：停止定时器
+        if hasattr(self, 'bg_widget') and self.bg_widget.timer:
+            self.bg_widget.timer.stop()
+        if hasattr(self, 'particle_widget') and self.particle_widget.timer:
+            self.particle_widget.timer.stop()
         event.accept()
 
 

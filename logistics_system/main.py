@@ -156,7 +156,7 @@ def trigger_change_address(target_id, new_x, new_y):
 class LogisticsApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🚚 动态物流调度模拟系统 - 深蓝科技版")
+        self.setWindowTitle("🚚 动态物流调度模拟系统 by pillow")
         self.setGeometry(100, 100, 1400, 800)
         self.setup_ui()
         self.apply_dark_theme()

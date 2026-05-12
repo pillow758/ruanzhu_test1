@@ -9,7 +9,7 @@ from main import LogisticsApp
 
 
 # ====================== 启动物流系统 ======================
-def start_main_window():
+def start_main_window(username, role):
     global main_window
 
     main_window = LogisticsApp()

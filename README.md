@@ -293,6 +293,7 @@ MIT License
 
 # 👨‍💻 作者
 
+pillow(Lpl)
 智能物流动态调度系统开发项目
 
 基于：

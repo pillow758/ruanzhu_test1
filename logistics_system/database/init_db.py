@@ -42,7 +42,18 @@ def init_database():
         status TEXT DEFAULT 'pending'
     )
     """)
-
+    # ====================== 路线表 ======================
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS routes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vehicle_id TEXT,
+        nodes TEXT,         -- 用逗号分隔存储节点ID
+        distance REAL,
+        cost REAL,
+        q REAL,             -- 载重
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
     # ====================== 默认管理员 ======================
     cursor.execute("""
     SELECT * FROM users WHERE username=?

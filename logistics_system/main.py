@@ -1,4 +1,6 @@
 import sys
+import os
+import sqlite3
 import math
 import random
 from PyQt6.QtWidgets import (
@@ -9,13 +11,13 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QRectF
 from PyQt6.QtGui import QFont, QColor, QPalette
 import pyqtgraph as pg
-
-# 尝试启用GPU加速（若系统支持则使用OpenGL渲染）
-try:
-    pg.setConfigOptions(useOpenGL=True)
-    pg.setConfigOptions(antialias=True)
-except Exception:
-    pass
+from echarts_window import EChartsAnalysis
+from PyQt6.QtWidgets import QTabWidget
+DB_PATH = os.path.join(os.path.dirname(__file__), "database/logistics.db")
+DB_PATH = os.path.abspath(DB_PATH)
+# 禁用OpenGL以避免黑屏问题
+pg.setConfigOptions(useOpenGL=False)
+pg.setConfigOptions(antialias=True)
 
 # ====================== 参数配置 ======================
 VEHICLE_CAPACITY = 3000
@@ -274,13 +276,33 @@ class LogisticsApp(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
+        # 新建 Tab
+        self.tabs = QTabWidget()
+        right_layout.addWidget(self.tabs)
+
+        # 原来的动画页 - 使用 QWidget 作为容器
+        self.dispatch_container = QWidget()
+        dispatch_layout = QVBoxLayout(self.dispatch_container)
+        dispatch_layout.setContentsMargins(0, 0, 0, 0)
+        dispatch_layout.setSpacing(0)
+        
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground('#1e1e2e')
         self.plot_widget.setLabel('left', 'Y 坐标 (km)', color='#ccc')
         self.plot_widget.setLabel('bottom', 'X 坐标 (km)', color='#ccc')
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setRange(xRange=[-2, 42], yRange=[-2, 42])
-        right_layout.addWidget(self.plot_widget)
+        self.plot_widget.setMinimumSize(400, 300)
+        dispatch_layout.addWidget(self.plot_widget, 1)
+        
+        self.tabs.addTab(self.dispatch_container, "调度动画")
+
+        # 数据分析页
+        self.analysis_widget = EChartsAnalysis()
+        self.tabs.addTab(self.analysis_widget, "数据分析")
+        
+        # Tab切换时强制重绘
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         main_layout.addWidget(right_panel, 1)
 
         # ---------- 状态栏 ----------
@@ -290,6 +312,14 @@ class LogisticsApp(QMainWindow):
         self.status_msg.setFont(QFont("Microsoft YaHei", 9))
         self.status_bar.addWidget(self.status_msg)
         self.setStatusBar(self.status_bar)
+
+    def on_tab_changed(self, index):
+        """Tab切换时处理"""
+        if index == 0:  # 调度动画页
+            # 强制重绘plot_widget
+            self.plot_widget.update()
+            # 重新设置范围确保显示正确
+            self.plot_widget.setRange(xRange=[-2, 42], yRange=[-2, 42])
 
     def apply_dark_theme(self):
         """全局深色科技风样式"""
@@ -342,12 +372,29 @@ class LogisticsApp(QMainWindow):
         global active_routes
         customers = [node_dict[nid] for nid in node_dict if nid != 'DC']
         active_routes = savings_algorithm(customers)
+        self.save_routes_to_db() 
         self.reset_animation()
         self.update_stats()
         self.status_msg.setText("✅ 静态规划完成，路线已优化")
-        QMessageBox.information(self, "完成",
-            f"静态规划完成！\n使用车辆: {len(active_routes)} 辆\n总成本: ¥{sum(r.cost for r in active_routes):.1f}")
-
+        # 延迟显示完成消息，避免影响初始化渲染
+        QTimer.singleShot(100, lambda: QMessageBox.information(self, "完成",
+            f"静态规划完成！\n使用车辆: {len(active_routes)} 辆\n总成本: ¥{sum(r.cost for r in active_routes):.1f}"))
+    def save_routes_to_db(self):
+        """把 active_routes 写入 routes 表供 ECharts 使用"""
+        global active_routes
+        if not active_routes:
+            return
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM routes")  # 清空旧数据
+        for idx, r in enumerate(active_routes):
+            nodes_str = ",".join(r.nodes)
+            cursor.execute("""
+            INSERT INTO routes (vehicle_id, nodes, distance, cost, q)
+            VALUES (?, ?, ?, ?, ?)
+            """, (f"V{idx+1}", nodes_str, r.distance, r.cost, r.q))
+        conn.commit()
+        conn.close()
     def reset_animation(self):
         """重置动画状态"""
         self.vehicle_pos = [0.0] * len(active_routes)
@@ -355,6 +402,8 @@ class LogisticsApp(QMainWindow):
         self.unload_status = {i: False for i in range(len(active_routes))}
 
     def start_animation(self):
+        # 先执行一次绘图，确保初始显示
+        self.update_plot()
         self.timer.start(50)  # 20帧/秒
 
     def update_plot(self):
@@ -489,6 +538,7 @@ class LogisticsApp(QMainWindow):
         new_node = Node(nid, x, y, q)
         global active_routes
         trigger_new_order(new_node)
+        self.save_routes_to_db()
         self.reset_animation()
         self.update_stats()
         self.status_msg.setText(f"✅ 已新增订单 {nid}")
@@ -502,6 +552,7 @@ class LogisticsApp(QMainWindow):
         if ok and nid:
             global active_routes
             trigger_cancel_order(nid)
+            self.save_routes_to_db()
             self.reset_animation()
             self.update_stats()
             self.status_msg.setText(f"✅ 已取消订单 {nid}")
@@ -519,6 +570,7 @@ class LogisticsApp(QMainWindow):
         if not ok: return
         global active_routes
         trigger_change_address(nid, x, y)
+        self.save_routes_to_db()
         self.reset_animation()
         self.update_stats()
         self.status_msg.setText(f"✅ 已更新订单 {nid} 地址")
@@ -540,6 +592,7 @@ class LogisticsApp(QMainWindow):
             trigger_new_order(new_node)
             new_ids.append(nid)
         self.reset_animation()
+        self.save_routes_to_db()
         self.update_stats()
         self.status_msg.setText(f"✅ 批量模拟完成，新增 {num} 个随机订单")
         QMessageBox.information(self, "完成", f"已生成 {num} 个随机订单！\nID示例: {', '.join(new_ids[:5])}" +

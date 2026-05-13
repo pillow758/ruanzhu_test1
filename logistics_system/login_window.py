@@ -1,10 +1,11 @@
+from PyQt6.QtWidgets import QComboBox
 from database.db_manager import verify_user
 from database.db_manager import register_user
 import random
 import sys
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QLineEdit,
-    QVBoxLayout, QHBoxLayout, QMessageBox, QFrame
+    QVBoxLayout, QHBoxLayout, QMessageBox, QFrame,QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, QRect
 from PyQt6.QtGui import QPainter, QBrush, QColor, QPen, QLinearGradient, QPainterPath, QFont
@@ -249,6 +250,63 @@ class LoginWindow(QWidget):
         self.username_edit.setMinimumHeight(48)
         self.username_edit.setMaximumWidth(500)
 
+        # ========== 角色选择下拉框 ==========
+        self.role_combo = QComboBox()
+        self.role_combo.addItems(["管理员", "驾驶员"])
+        self.role_combo.setMinimumHeight(48)
+        self.role_combo.setMaximumWidth(500)
+        self.role_combo.setStyleSheet("""
+            QComboBox {
+                background: rgba(30, 41, 59, 0.85);
+                border: 1px solid #3b82f6;
+                border-radius: 16px;
+                padding: 12px 16px;
+                font-size: 14px;
+                color: #f1f5f9;
+            }
+            QComboBox:focus {
+                border: 2px solid #60a5fa;
+                background: rgba(30, 41, 59, 0.95);
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 30px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 6px solid transparent;
+                border-right: 6px solid transparent;
+                border-top: 8px solid #60a5fa;
+                width: 0;
+                height: 0;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background: rgba(30, 41, 59, 0.95);
+                border: 1px solid #3b82f6;
+                border-radius: 8px;
+                color: #f1f5f9;
+                selection-background-color: #3b82f6;
+                outline: none;
+                margin: 0;
+                padding: 0;
+            }
+            QComboBox QAbstractItemView::item {
+                background: rgba(30, 41, 59, 0.95);
+                color: #f1f5f9;
+                padding: 8px 16px;
+                min-height: 32px;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background: #3b82f6;
+                color: #ffffff;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background: #3b82f6;
+                color: #ffffff;
+            }
+        """)
+
         self.password_edit = QLineEdit()
         self.password_edit.setPlaceholderText("🔒 密码")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -256,6 +314,7 @@ class LoginWindow(QWidget):
         self.password_edit.setMaximumWidth(500)
 
         panel_layout.addWidget(self.username_edit)
+        panel_layout.addWidget(self.role_combo)
         panel_layout.addWidget(self.password_edit)
         panel_layout.addSpacing(10)
 
@@ -277,7 +336,7 @@ class LoginWindow(QWidget):
         panel_layout.addWidget(line)
 
         self.panel.setLayout(panel_layout)
-    
+
     def resizeEvent(self, event):
         """自适应布局：背景、粒子层、面板大小随窗口改变"""
         new_size = event.size()
@@ -292,49 +351,32 @@ class LoginWindow(QWidget):
     def login(self):
         username = self.username_edit.text().strip()
         password = self.password_edit.text().strip()
-        success, role = verify_user(username, password)
-        
+        success, real_role = verify_user(username, password)
+
         if success:
-            QMessageBox.information(
-                self,
-                "成功",
-                f"登录成功！当前权限：{role}"
-            )
-
+            role_text = "管理员" if real_role == "admin" else "驾驶员"
+            QMessageBox.information(self, "成功", f"登录成功！权限：{role_text}")
             self.close()
-
-            self.success_callback(username, role)
-
+            self.success_callback(username, real_role)
         else:
-
-            QMessageBox.warning(
-                self,
-                "失败",
-                "用户名或密码错误"
-            )
+            QMessageBox.warning(self, "失败", "用户名或密码错误")
 
     def register(self):
         username = self.username_edit.text().strip()
         password = self.password_edit.text().strip()
+
         if not username or not password:
-            QMessageBox.warning(self, "错误", "用户名和密码不能为空！")
+            QMessageBox.warning(self, "错误", "用户名密码不能为空")
             return
-        success, msg = register_user(username, password)
+
+        role_text = self.role_combo.currentText()
+        role = "admin" if role_text == "管理员" else "driver"
+
+        success, msg = register_user(username, password, role)
         if success:
-
-            QMessageBox.information(
-                self,
-                "成功",
-                msg
-            )
-
+            QMessageBox.information(self, "成功", msg)
         else:
-
-            QMessageBox.warning(
-                self,
-                "失败",
-                msg
-            )
+            QMessageBox.warning(self, "失败", msg)
 
     def closeEvent(self, event):
         # 清理资源：停止定时器

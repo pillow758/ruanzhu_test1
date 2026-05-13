@@ -42,6 +42,18 @@ def init_database():
         status TEXT DEFAULT 'pending'
     )
     """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT,
+        customer_name TEXT,
+        address TEXT,
+        phone TEXT,
+        weight REAL,
+        status TEXT,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
     # ====================== 路线表 ======================
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS routes (

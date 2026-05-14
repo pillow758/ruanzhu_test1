@@ -1,3 +1,8 @@
+import os
+# 获取当前脚本所在目录
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 构建数据库绝对路径
+DB_PATH = os.path.join(BASE_DIR, "database", "logistics.db")
 import sys
 import sqlite3
 from datetime import datetime
@@ -462,7 +467,7 @@ class DriverWindow(QMainWindow):
         vehicle_id = self.routes[current_index][0]
         delivery_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        conn = sqlite3.connect("database/logistics.db")
+        conn = conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -484,7 +489,7 @@ class DriverWindow(QMainWindow):
         vehicle_id = self.routes[current_index][0]
         finish_time = datetime.now()
         
-        conn = sqlite3.connect("database/logistics.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
         cursor.execute("""

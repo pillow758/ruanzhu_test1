@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0d1117; font-family:"Microsoft YaHei",sans-serif; color:#e6edf3; padding:30px; }
+h1 { text-align:center; font-size:22px; margin-bottom:30px; color:#58a6ff; }
+.grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:24px; max-width:1200px; margin:0 auto; }
+.card { background:#161b22; border-radius:12px; overflow:hidden; border:1px solid #30363d; }
+.card-header { padding:16px 20px; font-size:15px; font-weight:bold; border-bottom:1px solid #30363d; }
+.card-body { padding:20px; }
+.tag { display:inline-block; padding:3px 10px; border-radius:12px; font-size:11px; margin-bottom:12px; }
+
+/* ====== 方案A: 简洁卡片风 ====== */
+.style-a .preview { background:#f8f9fa; border-radius:8px; padding:16px; }
+.style-a .top-bar { background:linear-gradient(135deg,#3b82f6,#1d4ed8); border-radius:10px; padding:14px 16px; margin-bottom:12px; color:white; }
+.style-a .top-bar h3 { font-size:14px; margin-bottom:2px; }
+.style-a .top-bar p { font-size:11px; opacity:0.85; }
+.style-a .stat-row { display:flex; gap:8px; margin-bottom:12px; }
+.style-a .stat { flex:1; background:white; border-radius:8px; padding:10px; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+.style-a .stat .num { font-size:20px; font-weight:bold; color:#1e40af; }
+.style-a .stat .lbl { font-size:10px; color:#6b7280; margin-top:2px; }
+.style-a .task { background:white; border-radius:8px; padding:12px; margin-bottom:8px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #3b82f6; }
+.style-a .task h4 { font-size:13px; color:#1e293b; margin-bottom:4px; }
+.style-a .task p { font-size:11px; color:#64748b; }
+.style-a .task .btn-row { display:flex; gap:6px; margin-top:8px; }
+.style-a .task .btn { padding:5px 12px; border-radius:6px; font-size:11px; border:none; color:white; }
+.style-a .btn-primary { background:#3b82f6; }
+.style-a .btn-success { background:#10b981; }
+.style-a .btn-warn { background:#f59e0b; }
+
+/* ====== 方案B: 深色科技风 ====== */
+.style-b .preview { background:#0f172a; border-radius:8px; padding:16px; }
+.style-b .top-bar { background:linear-gradient(135deg,#0ea5e9,#6366f1); border-radius:10px; padding:14px 16px; margin-bottom:12px; color:white; }
+.style-b .top-bar h3 { font-size:14px; }
+.style-b .top-bar p { font-size:11px; opacity:0.8; }
+.style-b .stat-row { display:flex; gap:8px; margin-bottom:12px; }
+.style-b .stat { flex:1; background:#1e293b; border:1px solid #334155; border-radius:8px; padding:10px; text-align:center; }
+.style-b .stat .num { font-size:20px; font-weight:bold; color:#38bdf8; }
+.style-b .stat .lbl { font-size:10px; color:#94a3b8; margin-top:2px; }
+.style-b .task { background:#1e293b; border:1px solid #334155; border-radius:8px; padding:12px; margin-bottom:8px; border-left:4px solid #0ea5e9; }
+.style-b .task h4 { font-size:13px; color:#e2e8f0; margin-bottom:4px; }
+.style-b .task p { font-size:11px; color:#94a3b8; }
+.style-b .task .btn-row { display:flex; gap:6px; margin-top:8px; }
+.style-b .task .btn { padding:5px 12px; border-radius:6px; font-size:11px; border:none; color:white; }
+.style-b .btn-primary { background:#0ea5e9; }
+.style-b .btn-success { background:#22c55e; }
+.style-b .btn-warn { background:#f59e0b; }
+
+/* ====== 方案C: 橙色暖色风 ====== */
+.style-c .preview { background:#1c1208; border-radius:8px; padding:16px; }
+.style-c .top-bar { background:linear-gradient(135deg,#f59e0b,#d97706); border-radius:10px; padding:14px 16px; margin-bottom:12px; color:white; }
+.style-c .top-bar h3 { font-size:14px; }
+.style-c .top-bar p { font-size:11px; opacity:0.85; }
+.style-c .stat-row { display:flex; gap:8px; margin-bottom:12px; }
+.style-c .stat { flex:1; background:#2d1e0f; border:1px solid #4a3020; border-radius:8px; padding:10px; text-align:center; }
+.style-c .stat .num { font-size:20px; font-weight:bold; color:#fbbf24; }
+.style-c .stat .lbl { font-size:10px; color:#d4a06a; margin-top:2px; }
+.style-c .task { background:#2d1e0f; border:1px solid #4a3020; border-radius:8px; padding:12px; margin-bottom:8px; border-left:4px solid #f59e0b; }
+.style-c .task h4 { font-size:13px; color:#fef3c7; margin-bottom:4px; }
+.style-c .task p { font-size:11px; color:#d4a06a; }
+.style-c .task .btn-row { display:flex; gap:6px; margin-top:8px; }
+.style-c .task .btn { padding:5px 12px; border-radius:6px; font-size:11px; border:none; color:white; }
+.style-c .btn-primary { background:#f59e0b; }
+.style-c .btn-success { background:#10b981; }
+.style-c .btn-warn { background:#ef4444; }
+
+.desc { font-size:12px; line-height:1.8; margin-top:10px; }
+.desc li { margin-bottom:4px; }
+.desc ul { padding-left:18px; }
+</style>
+</head>
+<body>
+<h1>🚛 驾驶员工作台 — 3套界面风格方案</h1>
+<div class="grid">
+
+<!-- 方案A -->
+<div class="card style-a">
+  <div class="card-header" style="color:#3b82f6;">方案A：简洁卡片风（浅色）</div>
+  <div class="card-body">
+    <div class="preview">
+      <div class="top-bar">
+        <h3> 张师傅 · 京A12345</h3>
+        <p>早班 · 在线中</p>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="num">12</div><div class="lbl">已完成</div></div>
+        <div class="stat"><div class="num">5</div><div class="lbl">待配送</div></div>
+        <div class="stat"><div class="num">48km</div><div class="lbl">今日里程</div></div>
+      </div>
+      <div class="task">
+        <h4>📦 ORD38291 · 张三</h4>
+        <p>朝阳区建国路88号 · 200kg</p>
+        <div class="btn-row">
+          <button class="btn btn-primary">开始取货</button>
+          <button class="btn btn-warn">异常上报</button>
+        </div>
+      </div>
+      <div class="task">
+        <h4>📦 ORD42105 · 李四</h4>
+        <p>海淀区中关村大街1号 · 350kg</p>
+        <div class="btn-row">
+          <button class="btn btn-success">确认送达</button>
+        </div>
+      </div>
+    </div>
+    <div class="desc">
+      <ul>
+        <li>白色卡片 + 蓝色主题色</li>
+        <li>圆角柔和，视觉清爽</li>
+        <li>浅色背景，适合明亮环境</li>
+        <li>Google Material Design 风格</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- 方案B -->
+<div class="card style-b">
+  <div class="card-header" style="color:#38bdf8;">方案B：深色科技风（蓝紫）</div>
+  <div class="card-body">
+    <div class="preview">
+      <div class="top-bar">
+        <h3>🚛 张师傅 · 京A12345</h3>
+        <p>早班 · 在线中</p>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="num">12</div><div class="lbl">已完成</div></div>
+        <div class="stat"><div class="num">5</div><div class="lbl">待配送</div></div>
+        <div class="stat"><div class="num">48km</div><div class="lbl">今日里程</div></div>
+      </div>
+      <div class="task">
+        <h4>📦 ORD38291 · 张三</h4>
+        <p>朝阳区建国路88号 · 200kg</p>
+        <div class="btn-row">
+          <button class="btn btn-primary">开始取货</button>
+          <button class="btn btn-warn">异常上报</button>
+        </div>
+      </div>
+      <div class="task">
+        <h4>📦 ORD42105 · 李四</h4>
+        <p>海淀区中关村大街1号 · 350kg</p>
+        <div class="btn-row">
+          <button class="btn btn-success">确认送达</button>
+        </div>
+      </div>
+    </div>
+    <div class="desc">
+      <ul>
+        <li>深蓝底色 + 蓝紫渐变主题</li>
+        <li>霓虹感，科技感强</li>
+        <li>高对比度，夜间友好</li>
+        <li>类似 Apple Dark Mode 风格</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- 方案C -->
+<div class="card style-c">
+  <div class="card-header" style="color:#f59e0b;">方案C：橙色暖色风（当前优化）</div>
+  <div class="card-body">
+    <div class="preview">
+      <div class="top-bar">
+        <h3>🚛 张师傅 · 京A12345</h3>
+        <p>早班 · 在线中</p>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="num">12</div><div class="lbl">已完成</div></div>
+        <div class="stat"><div class="num">5</div><div class="lbl">待配送</div></div>
+        <div class="stat"><div class="num">48km</div><div class="lbl">今日里程</div></div>
+      </div>
+      <div class="task">
+        <h4>📦 ORD38291 · 张三</h4>
+        <p>朝阳区建国路88号 · 200kg</p>
+        <div class="btn-row">
+          <button class="btn btn-primary">开始取货</button>
+          <button class="btn btn-warn">异常上报</button>
+        </div>
+      </div>
+      <div class="task">
+        <h4>📦 ORD42105 · 李四</h4>
+        <p>海淀区中关村大街1号 · 350kg</p>
+        <div class="btn-row">
+          <button class="btn btn-success">确认送达</button>
+        </div>
+      </div>
+    </div>
+    <div class="desc">
+      <ul>
+        <li>深棕底色 + 橙色主题</li>
+        <li>暖色调，辨识度高</li>
+        <li>与管理员蓝色区分明显</li>
+        <li>当前风格升级优化版</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

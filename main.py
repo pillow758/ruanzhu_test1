@@ -18,6 +18,8 @@ from order_manage import OrderManageWidget
 from cost_settings import CostSettingsDialog
 from PyQt6.QtWidgets import QTabWidget, QFileDialog
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+import urllib.request
+import urllib.parse
 
 try:
     from openpyxl import Workbook
@@ -46,6 +48,11 @@ pg.setConfigOptions(antialias=True)
 # ====================== 高德地图配置 ======================
 # 请替换为你自己的高德地图 API Key（申请地址：https://lbs.amap.com/）
 AMAP_API_KEY = "ddbc01b09151f242d386549e5f472f79"
+AMAP_WEB_KEY = "ddbc01b09151f242d386549e5f472f79"  # Web服务API Key（距离矩阵）
+
+# 距离矩阵缓存路径
+DM_CACHE_FILE = os.path.join(os.path.dirname(__file__), "distance_matrix_cache.json")
+_dist_matrix = {}          # {(lng1,lat1): {(lng2,lat2): km}}
 
 # ====================== 参数配置 ======================
 VEHICLE_CAPACITY = 3000
@@ -188,7 +195,128 @@ def haversine(lng1, lat1, lng2, lat2):
     return R * c
 
 def calc_dist(n1, n2):
-    """计算两节点间的球面距离（千米）"""
+    """计算两节点间的距离（千米）——优先使用真实道路距离矩阵"""
+    k1 = (round(n1.lng, 5), round(n1.lat, 5))
+    k2 = (round(n2.lng, 5), round(n2.lat, 5))
+    if k1 in _dist_matrix and k2 in _dist_matrix[k1]:
+        return _dist_matrix[k1][k2]
+    return haversine(n1.lng, n1.lat, n2.lng, n2.lat)
+
+
+# ====================== 高德道路距离矩阵（REST API） ======================
+def _amap_distance_api(origins, destinations):
+    """调用高德距离矩阵 API，返回 {(o_lng,o_lat):{(d_lng,d_lat): km}}"""
+    result = {}
+    origins_str = '|'.join(f"{lng},{lat}" for lng, lat in origins)
+    dests_str   = '|'.join(f"{lng},{lat}" for lng, lat in destinations)
+    params = urllib.parse.urlencode({
+        'origins': origins_str,
+        'destination': dests_str,
+        'type': 1,
+        'key': AMAP_WEB_KEY,
+        'output': 'JSON',
+    })
+    url = f"https://restapi.amap.com/v3/distance?{params}"
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        if data.get('status') != '1':
+            return {}
+        for i, row in enumerate(data.get('results', [])):
+            if row.get('status') != '1':
+                continue
+            for j, elem in enumerate(row.get('origin_id', [])):
+                try:
+                    o_idx = int(elem) - 1
+                    d_idx = int(row['dest_id'][j]) - 1
+                    dist_m = float(row['distance'][j])
+                    result[origins[o_idx]] = result.get(origins[o_idx], {})
+                    result[origins[o_idx]][destinations[d_idx]] = dist_m / 1000.0
+                except (ValueError, IndexError, KeyError):
+                    pass
+    except Exception as e:
+        print(f"[高德距离API] 请求失败: {e}")
+    return result
+
+
+def _build_distance_matrix():
+    """构建全节点道路距离矩阵（最少2次API调用）"""
+    global _dist_matrix
+    dc = node_dict.get('DC')
+    if not dc:
+        return
+    customers = [node_dict[nid] for nid in node_dict if nid != 'DC']
+    if not customers:
+        return
+
+    all_keys = [(round(n.lng, 5), round(n.lat, 5)) for n in [dc] + customers]
+    cust_keys = [(round(n.lng, 5), round(n.lat, 5)) for n in customers]
+    _dist_matrix = {k: {} for k in all_keys}
+
+    # 调用1：DC → 所有客户
+    r = _amap_distance_api(all_keys[:1], cust_keys)
+    for (o_lng, o_lat), dests in r.items():
+        for (d_lng, d_lat), km in dests.items():
+            _dist_matrix[(o_lng, o_lat)][(d_lng, d_lat)] = km
+            _dist_matrix[(d_lng, d_lat)][(o_lng, o_lat)] = km
+
+    # 调用2：所有客户 → 所有客户（一次批量）
+    r = _amap_distance_api(cust_keys, cust_keys)
+    for (o_lng, o_lat), dests in r.items():
+        for (d_lng, d_lat), km in dests.items():
+            _dist_matrix[(o_lng, o_lat)][(d_lng, d_lat)] = km
+
+    # 持久化缓存
+    try:
+        cache_data = {
+            f"{k[0]},{k[1]}": {f"{d[0]},{d[1]}": v for d, v in ds.items()}
+            for k, ds in _dist_matrix.items()
+        }
+        with open(DM_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f)
+    except Exception:
+        pass
+
+
+def _load_distance_matrix():
+    """优先内存 → 缓存文件 → None（返回 None 表示需要重新计算）"""
+    global _dist_matrix
+    if _dist_matrix:
+        return _dist_matrix
+    if os.path.exists(DM_CACHE_FILE):
+        try:
+            with open(DM_CACHE_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            _dist_matrix = {
+                tuple(map(float, k.split(','))): {
+                    tuple(map(float, d.split(','))): v for d, v in ds.items()
+                }
+                for k, ds in raw.items()
+            }
+            return _dist_matrix
+        except Exception:
+            _dist_matrix = {}
+    return None
+
+
+def _load_dm_background():
+    """后台静默加载距离矩阵（启动时调用）"""
+    dm = _load_distance_matrix()
+    if dm:
+        return
+    try:
+        _build_distance_matrix()
+    except Exception as e:
+        print(f"[距离矩阵] 后台加载失败: {e}")
+
+
+def get_road_distance(n1, n2):
+    """获取道路距离（km），矩阵不可用时回退 Haversine"""
+    k1 = (round(n1.lng, 5), round(n1.lat, 5))
+    k2 = (round(n2.lng, 5), round(n2.lat, 5))
+    if k1 in _dist_matrix and k2 in _dist_matrix.get(k1, {}):
+        return _dist_matrix[k1][k2]
     return haversine(n1.lng, n1.lat, n2.lng, n2.lat)
 
 def evaluate_route(route_node_ids):
@@ -457,38 +585,58 @@ class AMapViewWidget(QWidget):
                     map.add(marker);
                 }});
 
-                // 添加路线
-                routesData.forEach(function(route) {{
-                    if (route.path.length > 1) {{
-                        var polyline = new AMap.Polyline({{
-                            path: route.path,
-                            strokeColor: route.color,
-                            strokeWeight: 4,
-                            strokeOpacity: 0.8,
-                            lineJoin: 'round',
-                            lineCap: 'round',
-                            showDir: true
+                // 添加路线（使用 AMap.Driving 展示真实道路路径）
+                AMap.plugin('AMap.Driving', function() {{
+                    routesData.forEach(function(route) {{
+                        if (route.path.length < 2) return;
+
+                        var origin  = new AMap.LngLat(route.path[0][0], route.path[0][1]);
+                        var dest    = new AMap.LngLat(route.path[route.path.length-1][0], route.path[route.path.length-1][1]);
+                        var wps     = route.path.slice(1, -1).map(function(p) {{
+                            return new AMap.WayPoint(new AMap.LngLat(p[0], p[1]));
                         }});
 
-                        // 路线信息窗口
-                        var routeInfo = '<div class="info-window">';
-                        routeInfo += '<h4>' + route.vehicle_id + '</h4>';
-                        routeInfo += '<p>距离: ' + route.distance + ' km</p>';
-                        routeInfo += '<p>载重: ' + route.q + ' kg</p>';
-                        routeInfo += '<p>成本: ¥' + route.cost + '</p>';
-                        routeInfo += '</div>';
-
-                        var routeInfoWindow = new AMap.InfoWindow({{
-                            content: routeInfo,
-                            offset: new AMap.Pixel(0, -10)
+                        var driving = new AMap.Driving({{
+                            map: map,
+                            policy: AMap.DrivingPolicy.LEAST_DISTANCE,
+                            hideMarkers: true,
+                            autoFitView: false
                         }});
 
-                        polyline.on('click', function(e) {{
-                            routeInfoWindow.open(map, e.lnglat);
-                        }});
+                        driving.search(origin, dest, {{ waypoints: wps }}, function(status, result) {{
+                            if (status === 'complete' && result.routes && result.routes.length) {{
+                                var pathCoords = [];
+                                result.routes[0].steps.forEach(function(step) {{
+                                    pathCoords = pathCoords.concat(step.path);
+                                }});
+                                // 用路线颜色重绘 Polyline（替代 Driving 默认样式）
+                                var roadLine = new AMap.Polyline({{
+                                    path: pathCoords,
+                                    strokeColor: route.color,
+                                    strokeWeight: 5,
+                                    strokeOpacity: 0.85,
+                                    lineJoin: 'round',
+                                    lineCap: 'round',
+                                    showDir: true
+                                }});
 
-                        map.add(polyline);
-                    }}
+                                var routeInfo = '<div class="info-window">';
+                                routeInfo += '<h4>' + route.vehicle_id + '</h4>';
+                                routeInfo += '<p>球面距离: ' + route.distance + ' km</p>';
+                                routeInfo += '<p>载重: ' + route.q + ' kg</p>';
+                                routeInfo += '<p>成本: ¥' + route.cost + '</p>';
+                                routeInfo += '</div>';
+                                var routeInfoWindow = new AMap.InfoWindow({{
+                                    content: routeInfo,
+                                    offset: new AMap.Pixel(0, -10)
+                                }});
+                                roadLine.on('click', function(e) {{
+                                    routeInfoWindow.open(map, e.lnglat);
+                                }});
+                                map.add(roadLine);
+                            }}
+                        }});
+                    }});
                 }});
 
                 // 自动调整视野以显示所有标记
@@ -575,6 +723,7 @@ class LogisticsApp(QMainWindow):
             ("🚛 分配任务", self.assign_tasks_to_drivers, "#E67E22"),
             ("📥 导出调度方案", self.export_routes, "#16A085"),
             ("⚙️ 成本设置", self.open_cost_settings, "#8E44AD"),
+            ("🛣️ 重算道路距离", self.recalc_distance_matrix, "#0891b2"),
             ("🗺️ 刷新地图", self.refresh_map, "#1ABC9C"),
             ("🔄 重置系统", self.reset_system, "#95A5A6"),
         ]
@@ -817,9 +966,23 @@ class LogisticsApp(QMainWindow):
             yRange=[dc_lat - rng_lat * 2, dc_lat + rng_lat * 2]
         )
 
-        self.init_routes()
+        # 加载真实道路距离矩阵（高德REST API，带缓存回退）
+        dm = _load_distance_matrix()
+        if not dm:
+            try:
+                self.status_msg.setText("🌐 正在获取高德真实道路距离矩阵...")
+                QApplication.processEvents()
+                _build_distance_matrix()
+                mode_str = "真实道路距离"
+            except Exception as e:
+                print(f"[距离矩阵] 构建失败，回退至直线距离: {e}")
+                mode_str = "直线距离（API不可用）"
+        else:
+            mode_str = "真实道路距离（缓存）"
 
-    def init_routes(self):
+        self.init_routes(mode_str)
+
+    def init_routes(self, mode_str="直线距离"):
         """静态优化路线"""
         global active_routes
         customers = [node_dict[nid] for nid in node_dict if nid != 'DC']
@@ -828,9 +991,9 @@ class LogisticsApp(QMainWindow):
         self.reset_animation()
         self.update_stats()
         self.refresh_map()
-        self.status_msg.setText("✅ 静态规划完成，路线已优化")
+        self.status_msg.setText(f"✅ 静态规划完成（{mode_str}）")
         QTimer.singleShot(100, lambda: QMessageBox.information(self, "完成",
-            f"静态规划完成！\n使用车辆: {len(active_routes)} 辆\n总成本: ¥{sum(r.cost for r in active_routes):.1f}"))
+            f"静态规划完成！\n距离计算：{mode_str}\n使用车辆: {len(active_routes)} 辆\n总成本: ¥{sum(r.cost for r in active_routes):.1f}"))
 
     def save_routes_to_db(self):
         """把 active_routes 写入 routes 表供 ECharts 使用"""
@@ -983,6 +1146,28 @@ class LogisticsApp(QMainWindow):
         """刷新高德地图视图"""
         if hasattr(self, 'map_widget'):
             self.map_widget.update_map()
+
+    def recalc_distance_matrix(self):
+        """重新从高德 API 计算真实道路距离矩阵，并重新规划路线"""
+        global _dist_matrix
+        self.status_msg.setText("🌐 正在请求高德真实道路距离...")
+        QApplication.processEvents()
+        try:
+            _dist_matrix = {}
+            _build_distance_matrix()
+            mode_str = "真实道路距离"
+        except Exception as e:
+            mode_str = "直线距离（API 请求失败）"
+            print(f"[距离矩阵] 重新计算失败: {e}")
+        # 重新计算所有路线成本
+        for r in active_routes:
+            r.q, r.distance, r.cost = evaluate_route(r.nodes)
+        self.save_routes_to_db()
+        self.reset_animation()
+        self.update_stats()
+        self.refresh_map()
+        self.status_msg.setText(f"✅ 距离矩阵已更新（{mode_str}）")
+        QMessageBox.information(self, "道路距离", f"距离矩阵已更新！\n模式：{mode_str}\n路线成本已重新计算。")
 
     def assign_tasks_to_drivers(self):
         """分配任务给驾驶员"""

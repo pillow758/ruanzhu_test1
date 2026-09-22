@@ -23,6 +23,9 @@ env/
 *.db
 *.sqlite3
 
+# Distance matrix cache
+distance_matrix_cache.json
+
 # Temporary files
 temp_charts/
 temp_maps/

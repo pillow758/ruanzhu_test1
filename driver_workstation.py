@@ -449,16 +449,39 @@ class NavigationMap(QWidget):
                 }});
                 map.add(endMarker);
 
-                // 绘制路线（蓝色直线）
-                var polyline = new AMap.Polyline({{
-                    path: [[{driver_lng}, {driver_lat}], [{dest_lng}, {dest_lat}]],
-                    strokeColor: '#3b82f6',
-                    strokeWeight: 5,
-                    strokeOpacity: 0.8,
-                    lineJoin: 'round',
-                    showDir: true
+                // 使用 AMap.Driving 展示真实道路导航路径
+                AMap.plugin('AMap.Driving', function() {{
+                    var driving = new AMap.Driving({{
+                        map: map,
+                        policy: AMap.DrivingPolicy.LEAST_DISTANCE,
+                        hideMarkers: true,
+                        autoFitView: false
+                    }});
+                    driving.search(
+                        new AMap.LngLat({driver_lng}, {driver_lat}),
+                        new AMap.LngLat({dest_lng}, {dest_lat}),
+                        {{}},
+                        function(status, result) {{
+                            if (status === 'complete' && result.routes && result.routes.length) {{
+                                var pathCoords = [];
+                                result.routes[0].steps.forEach(function(step) {{
+                                    pathCoords = pathCoords.concat(step.path);
+                                }});
+                                var roadLine = new AMap.Polyline({{
+                                    path: pathCoords,
+                                    strokeColor: '#3b82f6',
+                                    strokeWeight: 6,
+                                    strokeOpacity: 0.9,
+                                    lineJoin: 'round',
+                                    lineCap: 'round',
+                                    showDir: true
+                                }});
+                                map.add(roadLine);
+                                map.setFitView(null, false, [80, 80, 80, 80]);
+                            }}
+                        }}
+                    );
                 }});
-                map.add(polyline);
 
                 // 自动调整视野
                 map.setFitView(null, false, [80, 80, 80, 80]);

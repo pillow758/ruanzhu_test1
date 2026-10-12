@@ -204,6 +204,8 @@ def init_database():
     conn.commit()
     from gps_store import ensure_schema
     ensure_schema(conn)
+    from depot_settings import ensure_schema as ensure_depot_schema
+    ensure_depot_schema(conn)
     conn.commit()
     conn.close()
 

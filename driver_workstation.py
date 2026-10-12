@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import html as html_module
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QListWidget, QListWidgetItem,
@@ -13,6 +14,7 @@ from web_view import EmbeddedWebView as QWebEngineView, apply_light_palette
 
 from gps_store import get_position, is_fresh, position_text
 from gps_access import GpsAccessDialog, gps_service
+from depot_settings import get_effective_depot
 
 from database.db_manager import (
     get_driver_tasks, update_task_status, report_exception,
@@ -298,16 +300,13 @@ class NavigationMap(QWidget):
     @staticmethod
     def _get_dc():
         """获取当前城市配送中心坐标"""
-        try:
-            from main import CITIES, current_city
-            city = CITIES.get(current_city, CITIES['北京'])
-            return city['dc_lng'], city['dc_lat'], city.get('dc_name', '配送中心')
-        except Exception:
-            return 116.397, 39.908, '配送中心'
+        depot=get_effective_depot()
+        return depot['lng'],depot['lat'],depot['name']
 
     def show_empty_map(self):
         """显示空白地图（以当前城市配送中心为圆心）"""
         dc_lng, dc_lat, dc_name = self._get_dc()
+        dc_name=html_module.escape(dc_name)
         html = f"""
         <!DOCTYPE html>
         <html>
@@ -350,7 +349,7 @@ class NavigationMap(QWidget):
                 🗺️<br>
                 选择一个任务开始导航
             </div>
-            <div class="dc-label">📍 {dc_name}（{dc_lng:.3f}, {dc_lat:.3f}）</div>
+            <div class="dc-label">📍 {dc_name}（{dc_lng:.6f}, {dc_lat:.6f}）</div>
             <div id="map-error" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#ef4444;font-size:16px;text-align:center;font-family:SimSun,sans-serif;"></div>
             <script>
                 window._AMapSecurityConfig = {{
@@ -504,6 +503,7 @@ class NavigationMap(QWidget):
 
     def show_driver_at_dc(self, driver_lng, driver_lat, dc_lng, dc_lat, dc_name, accuracy=0):
         """在地图上同时显示配送中心和驾驶员位置"""
+        dc_name=html_module.escape(dc_name)
         html = f"""
         <!DOCTYPE html>
         <html>
@@ -614,6 +614,7 @@ class DriverWorkstation(QMainWindow):
         self._map_has_driver = False
 
         self.init_ui()
+        self._depot_signature=self.nav_map._get_dc()
         self.apply_theme()
         self.load_tasks()
 
@@ -1087,6 +1088,11 @@ class DriverWorkstation(QMainWindow):
 
     def _tick_gps(self):
         self._location = get_position(self.driver_id)
+        depot=self.nav_map._get_dc()
+        if depot!=self._depot_signature and not self.nav_map.current_destination:
+            self._map_has_driver=False
+            if not self._location: self.nav_map.show_empty_map()
+        self._depot_signature=depot
         if self._location:
             self.driver_lng = self._location['lng']
             self.driver_lat = self._location['lat']

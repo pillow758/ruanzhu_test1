@@ -18,13 +18,22 @@ class FlowBackground(QWidget):
         super().__init__(parent)
         self.theme = theme  # "admin" or "driver"
         self.offset = 0
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_gradient)
-        self.timer.start(50)
 
     def update_gradient(self):
+        if not self.isVisible():
+            return
         self.offset = (self.offset + 2) % 100
         self.update()
+
+    def showEvent(self, event):
+        self.timer.start(50)
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -34,8 +43,8 @@ class FlowBackground(QWidget):
             # 管理员：蓝色科技风
             gradient = QLinearGradient(0, 0, self.width(), self.height())
             pos1 = (self.offset / 100.0)
-            pos2 = (self.offset + 30) / 100.0
-            pos3 = (self.offset + 70) / 100.0
+            pos2 = ((self.offset + 30) % 100) / 100.0
+            pos3 = ((self.offset + 70) % 100) / 100.0
             gradient.setColorAt(0, QColor(15, 23, 42))
             gradient.setColorAt(pos1, QColor(30, 27, 75))
             gradient.setColorAt(pos2, QColor(46, 16, 101))
@@ -50,8 +59,8 @@ class FlowBackground(QWidget):
             # 驾驶员：橙色温暖风
             gradient = QLinearGradient(0, 0, self.width(), self.height())
             pos1 = (self.offset / 100.0)
-            pos2 = (self.offset + 30) / 100.0
-            pos3 = (self.offset + 70) / 100.0
+            pos2 = ((self.offset + 30) % 100) / 100.0
+            pos3 = ((self.offset + 70) % 100) / 100.0
             gradient.setColorAt(0, QColor(45, 25, 10))
             gradient.setColorAt(pos1, QColor(80, 40, 20))
             gradient.setColorAt(pos2, QColor(60, 30, 15))
@@ -61,7 +70,7 @@ class FlowBackground(QWidget):
             # 公路感线条
             painter.setPen(QPen(QColor(255, 165, 0, 50), 2))
             for i in range(0, self.width(), 80):
-                painter.drawLine(i, 0, i + self.offset * 0.5, self.height())
+                painter.drawLine(i, 0, int(i + self.offset * 0.5), self.height())
 
 
 # ====================== 粒子动画组件 ======================
@@ -73,12 +82,13 @@ class ParticleWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.particles = []
         self.particle_count = 60
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_particles)
-        self.timer.start(40)
         self.init_particles()
 
     def init_particles(self):
+        # 切换主题时替换旧粒子，避免反复登录切换后数量不断累积。
+        self.particles.clear()
         width = self.width() if self.width() > 0 else 800
         height = self.height() if self.height() > 0 else 600
 
@@ -97,6 +107,14 @@ class ParticleWidget(QWidget):
                 'alpha': random.randint(50, 150),
                 'color': random.choice(colors)
             })
+
+    def showEvent(self, event):
+        self.timer.start(40)
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        super().hideEvent(event)
 
     def update_particles(self):
         if not self.isVisible():
@@ -688,6 +706,7 @@ class LoginWindow(QWidget):
 
     def switch_tab(self, index):
         """切换登录标签"""
+        theme_changed = self.current_theme != ("admin" if index == 0 else "driver")
         self.stack.setCurrentIndex(index)
 
         if index == 0:
@@ -706,7 +725,10 @@ class LoginWindow(QWidget):
         # 更新背景和粒子主题
         self.bg_widget.theme = self.current_theme
         self.particle_widget.theme = self.current_theme
-        self.particle_widget.init_particles()
+        if theme_changed:
+            self.particle_widget.init_particles()
+        self.bg_widget.update()
+        self.particle_widget.update()
         self.update_panel_style()
 
     def update_panel_style(self):
@@ -730,12 +752,10 @@ class LoginWindow(QWidget):
 
     def on_admin_login(self, username, role):
         """管理员登录成功回调"""
-        self.close()
         self.admin_login_success.emit(username, role)
 
     def on_driver_login(self, driver_info):
         """驾驶员登录成功回调"""
-        self.close()
         self.driver_login_success.emit(driver_info)
 
     def resizeEvent(self, event):

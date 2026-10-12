@@ -1,0 +1,60 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<style>body{margin:0;font:14px/1.6 sans-serif;color:#172033;background:white}#map{height:100vh}
+#map-hint{position:absolute;z-index:100;bottom:16px;left:16px;right:16px;background:#ffffffed;border:1px solid #cbd5e1;border-radius:8px;padding:10px;pointer-events:none}</style></head>
+<body><div id="map"></div><div id="map-hint">定位地址后，请放大地图确认仓库入口；点击地图或拖动标记可调整位置。</div>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<script>window._AMapSecurityConfig={securityJsCode:__SECURITY_CODE__};</script>
+<script src="https://webapi.amap.com/maps?v=2.0&key=__API_KEY__"></script>
+<script>
+var map=new AMap.Map('map',{center:__CENTER__,zoom:13,viewMode:'2D'});
+var depotMarker=new AMap.Marker({position:__CENTER__,map:map,draggable:true,title:'配送中心'});
+var depotBridge=null, districtSearch=null;
+function textValue(value){return typeof value==='string'?value:'';}
+function depotShowPoint(lng,lat){depotMarker.show();depotMarker.setPosition([lng,lat]);map.setZoomAndCenter(17,[lng,lat]);}
+function depotClearCandidate(){depotMarker.hide();}
+function depotLoadRegions(requestId,level,keyword){
+    var search=new AMap.DistrictSearch({level:({province:'country',city:'province',district:'city',street:'district'})[level],subdistrict:1,extensions:'base'});
+    search.search(keyword,function(status,result){
+        var children=status==='complete'&&result.districtList&&result.districtList[0]?result.districtList[0].districtList:[];
+        depotBridge.regionsResult(JSON.stringify({request_id:requestId,level:level,items:(children||[]).map(function(item){return {name:item.name,code:item.adcode,level:item.level};})}));
+    });
+}
+function depotGeocode(version,address,city){
+    var geocoder=new AMap.Geocoder({city:city});
+    geocoder.getLocation(address,function(status,result){
+        var matches=status==='complete'&&result.geocodes?result.geocodes:[];
+        depotBridge.geocodeResult(JSON.stringify({version:version,error:matches.length?'':String((result&&result.info)||result||'未找到地址'),items:matches.map(function(item){return {
+            address:item.formattedAddress||address,lng:item.location.getLng(),lat:item.location.getLat(),
+            level:item.level||'未知',province:textValue((item.addressComponent||{}).province),city:textValue((item.addressComponent||{}).city),district:textValue((item.addressComponent||{}).district)
+        };})}));
+    });
+}
+function depotReversePoint(version,lng,lat){
+    var geocoder=new AMap.Geocoder();
+    geocoder.getAddress([lng,lat],function(status,result){
+        var address=status==='complete'?result.regeocode:null;
+        var fields=address?address.addressComponent:{};
+        var number=fields.streetNumber||{};
+        var detail=(fields.township?textValue(number.street):'')+textValue(number.number);
+        if(address&&!detail){
+            detail=address.formattedAddress;
+            [fields.province,fields.city,fields.district,fields.township].forEach(function(value){
+                if(typeof value==='string'&&value&&detail.indexOf(value)===0)detail=detail.slice(value.length);
+            });
+        }
+        depotBridge.reverseResult(JSON.stringify({version:version,address:address?address.formattedAddress:'',
+            province:textValue(fields.province),city:textValue(fields.city)||textValue(fields.province),
+            district:textValue(fields.district),street:textValue(fields.township)||textValue(number.street),
+            detail:detail}));
+    });
+}
+new QWebChannel(qt.webChannelTransport,function(channel){
+    depotBridge=channel.objects.depotBridge;
+    AMap.plugin(['AMap.Geocoder','AMap.DistrictSearch'],function(){
+        districtSearch=new AMap.DistrictSearch({subdistrict:1,extensions:'base'});
+        depotBridge.mapReady();
+    });
+    map.on('click',function(event){depotBridge.pointPicked(event.lnglat.getLng(),event.lnglat.getLat());});
+    depotMarker.on('dragend',function(){var point=depotMarker.getPosition();depotBridge.pointPicked(point.getLng(),point.getLat());});
+});
+</script></body></html>

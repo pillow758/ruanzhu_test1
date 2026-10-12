@@ -7,7 +7,7 @@ import json
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QFrame, QTableWidget, QTableWidgetItem,
-    QHeaderView, QInputDialog, QMessageBox, QStatusBar, QComboBox
+    QHeaderView, QInputDialog, QMessageBox, QStatusBar, QComboBox, QScrollArea
 )
 from PyQt6.QtCore import Qt, QTimer, QRectF, QUrl
 from PyQt6.QtGui import QFont, QColor, QPalette
@@ -16,9 +16,11 @@ from echarts_window import EChartsAnalysis
 from realtime_monitor import RealtimeMonitorWidget
 from gps_store import get_positions, is_fresh
 from gps_access import GpsAccessDialog, gps_service
+from depot_settings import get_depot, get_effective_depot
+from depot_dialog import DepotSettingsDialog
 from order_manage import OrderManageWidget
 from cost_settings import CostSettingsDialog
-from PyQt6.QtWidgets import QTabWidget, QFileDialog
+from PyQt6.QtWidgets import QTabWidget, QFileDialog, QDialog
 from web_view import EmbeddedWebView as QWebEngineView, apply_light_palette
 import urllib.request
 import urllib.parse
@@ -147,6 +149,11 @@ CITIES = {
 
 # 当前城市（全局）
 current_city = '北京'
+
+
+def get_current_depot():
+    city=CITIES.get(current_city,CITIES['北京'])
+    return get_effective_depot(dict(lng=city['dc_lng'],lat=city['dc_lat'],name=city['dc_name'],address=city['dc_name']))
 
 # ====================== 数据结构 ======================
 class Node:
@@ -291,8 +298,9 @@ def _build_distance_matrix():
 def _load_distance_matrix():
     """优先内存 → 缓存文件 → None（返回 None 表示需要重新计算）"""
     global _dist_matrix
-    if _dist_matrix:
+    if _dist_matrix and _matrix_matches_nodes(_dist_matrix):
         return _dist_matrix
+    _dist_matrix = {}
     if os.path.exists(DM_CACHE_FILE):
         try:
             with open(DM_CACHE_FILE, 'r', encoding='utf-8') as f:
@@ -303,10 +311,17 @@ def _load_distance_matrix():
                 }
                 for k, ds in raw.items()
             }
-            return _dist_matrix
+            if _matrix_matches_nodes(_dist_matrix):
+                return _dist_matrix
+            _dist_matrix = {}
         except Exception:
             _dist_matrix = {}
     return None
+
+
+def _matrix_matches_nodes(matrix):
+    keys={(round(node.lng,5),round(node.lat,5)) for node in node_dict.values()}
+    return bool(keys) and all(a in matrix and all(b==a or b in matrix[a] for b in keys) for a in keys)
 
 
 def _load_dm_background():
@@ -515,8 +530,8 @@ class AMapViewWidget(QWidget):
             center_lng = sum(all_lngs) / len(all_lngs)
             center_lat = sum(all_lats) / len(all_lats)
         else:
-            city = CITIES.get(current_city, CITIES['北京'])
-            center_lng, center_lat = city['dc_lng'], city['dc_lat']
+            depot = get_current_depot()
+            center_lng, center_lat = depot['lng'], depot['lat']
 
         return f"""
         <!DOCTYPE html>
@@ -706,6 +721,12 @@ class LogisticsApp(QMainWindow):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(title)
 
+        self.depot_label=QLabel()
+        self.depot_label.setWordWrap(True)
+        self.depot_label.setStyleSheet('color:#334155;font:12px SimSun;border:none;padding:3px;')
+        self._update_depot_label()
+        left_layout.addWidget(self.depot_label)
+
         # GPS 定位状态栏
         gps_frame = QFrame()
         gps_frame.setStyleSheet("background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;")
@@ -739,6 +760,7 @@ class LogisticsApp(QMainWindow):
 
         # 按钮组
         btn_data = [
+            ("🏭 配送中心设置", self.open_depot_settings, "#2563EB"),
             ("🎯 静态规划", self.init_routes, "#27AE60"),
             ("➕ 新增订单", self.add_order, "#3498DB"),
             ("❌ 取消订单", self.cancel_order, "#E74C3C"),
@@ -826,7 +848,15 @@ class LogisticsApp(QMainWindow):
         """)
         left_layout.addWidget(self.table, 1)
 
-        main_layout.addWidget(left_panel)
+        self.table.setMinimumHeight(180)
+        left_panel.setMinimumHeight(left_panel.sizeHint().height())
+        left_scroll=QScrollArea()
+        left_scroll.setFixedWidth(380)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setWidget(left_panel)
+        left_scroll.setStyleSheet('QScrollArea {border:none;background:transparent;} QScrollBar:vertical {width:10px;background:#e2e8f0;} QScrollBar::handle:vertical {background:#94a3b8;min-height:30px;}')
+        main_layout.addWidget(left_scroll)
 
         # ---------- 右侧显示面板 ----------
         right_panel = QFrame()
@@ -974,7 +1004,8 @@ class LogisticsApp(QMainWindow):
         active_routes.clear()
 
         city = CITIES.get(current_city, CITIES['北京'])
-        dc_lng, dc_lat, dc_name = city['dc_lng'], city['dc_lat'], city['dc_name']
+        depot = get_current_depot()
+        dc_lng, dc_lat, dc_name = depot['lng'], depot['lat'], depot['address']
         rng_lng, rng_lat = city['range']
 
         # 配送中心
@@ -983,6 +1014,10 @@ class LogisticsApp(QMainWindow):
         # 客户节点（自动分配时间窗：8:00–18:00 之间平均分布）
         num_customers = len(city['customers'])
         for idx, (nid, lng, lat, q, addr) in enumerate(city['customers']):
+            if depot['source']!='default':
+                # 仅初始化演示节点；现有订单在修改配送中心时保持原坐标。
+                lng,lat=dc_lng+(lng-city['dc_lng']),dc_lat+(lat-city['dc_lat'])
+                addr=f"{depot['city']}{depot['district']} · 演示客户 {nid}（示例位置）"
             tw_start = 480 + idx * (600 // max(num_customers, 1))  # 8:00 起，每客户约1.5h间隔
             tw_end   = tw_start + 120  # 2小时窗口
             node_dict[nid] = Node(
@@ -1005,7 +1040,7 @@ class LogisticsApp(QMainWindow):
                 self.status_msg.setText("🌐 正在获取高德真实道路距离矩阵...")
                 QApplication.processEvents()
                 _build_distance_matrix()
-                mode_str = "真实道路距离"
+                mode_str = "真实道路距离" if _matrix_matches_nodes(_dist_matrix) else "直线距离（道路距离接口不可用）"
             except Exception as e:
                 print(f"[距离矩阵] 构建失败，回退至直线距离: {e}")
                 mode_str = "直线距离（API不可用）"
@@ -1013,6 +1048,7 @@ class LogisticsApp(QMainWindow):
             mode_str = "真实道路距离（缓存）"
 
         self.init_routes(mode_str)
+        self._update_depot_label()
 
     def init_routes(self, mode_str="直线距离"):
         """静态优化路线"""
@@ -1179,6 +1215,32 @@ class LogisticsApp(QMainWindow):
         if hasattr(self, 'map_widget'):
             self.map_widget.update_map()
 
+    def _update_depot_label(self):
+        depot=get_current_depot()
+        self.depot_label.setText('配送中心：'+depot['name']+'\n'+depot['address'])
+        self.depot_label.setToolTip(f"经度 {depot['lng']:.6f}，纬度 {depot['lat']:.6f}")
+
+    def open_depot_settings(self):
+        dialog=DepotSettingsDialog(self)
+        try:
+            if dialog.exec()==QDialog.DialogCode.Accepted:
+                self._apply_depot_settings(dialog.saved_depot)
+        finally:
+            dialog.deleteLater()
+
+    def _apply_depot_settings(self,depot):
+        global _dist_matrix
+        _dist_matrix={}
+        node_dict['DC']=Node('DC',depot['lng'],depot['lat'],0,depot['address'])
+        self._update_depot_label()
+        xs=[node.lng for node in node_dict.values()]
+        ys=[node.lat for node in node_dict.values()]
+        self.plot_widget.setRange(xRange=[min(xs)-.01,max(xs)+.01],yRange=[min(ys)-.01,max(ys)+.01])
+        self.init_routes('新配送中心 · 距离暂按直线估算，可重算道路距离')
+        self.realtime_widget._load_data()
+        self.tabs.setCurrentIndex(1)
+        self.status_msg.setText('配送中心已保存并应用：'+depot['address'])
+
     def recalc_distance_matrix(self):
         """重新从高德 API 计算真实道路距离矩阵，并重新规划路线"""
         global _dist_matrix
@@ -1187,7 +1249,7 @@ class LogisticsApp(QMainWindow):
         try:
             _dist_matrix = {}
             _build_distance_matrix()
-            mode_str = "真实道路距离"
+            mode_str = "真实道路距离" if _matrix_matches_nodes(_dist_matrix) else "直线距离（道路距离接口不可用）"
         except Exception as e:
             mode_str = "直线距离（API 请求失败）"
             print(f"[距离矩阵] 重新计算失败: {e}")
@@ -1462,7 +1524,8 @@ class LogisticsApp(QMainWindow):
             return
         # 根据当前城市设置坐标范围
         city = CITIES.get(current_city, CITIES['北京'])
-        base_lng, base_lat = city['dc_lng'], city['dc_lat']
+        depot=get_current_depot()
+        base_lng, base_lat = depot['lng'], depot['lat']
         rng_lng, rng_lat = city['range']
         lng_min, lng_max = base_lng - rng_lng * 2, base_lng + rng_lng * 2
         lat_min, lat_max = base_lat - rng_lat * 2, base_lat + rng_lat * 2
@@ -1536,7 +1599,8 @@ class LogisticsApp(QMainWindow):
         new_ids = []
         # 根据当前城市设置坐标范围
         city = CITIES.get(current_city, CITIES['北京'])
-        base_lng, base_lat = city['dc_lng'], city['dc_lat']
+        depot=get_current_depot()
+        base_lng, base_lat = depot['lng'], depot['lat']
         rng_lng, rng_lat = city['range']
         for _ in range(num):
             nid = f"R{random.randint(100, 999)}"
@@ -1562,8 +1626,8 @@ class LogisticsApp(QMainWindow):
         global node_dict, active_routes, current_city
         node_dict.clear()
         active_routes.clear()
-        city = CITIES.get(current_city, CITIES['北京'])
-        node_dict['DC'] = Node('DC', city['dc_lng'], city['dc_lat'], 0, city['dc_name'])
+        depot=get_current_depot()
+        node_dict['DC'] = Node('DC', depot['lng'], depot['lat'], 0, depot['address'])
 
     def reset_system(self):
         reply = QMessageBox.question(self, "确认", "重置将清除所有订单数据，确定吗？",

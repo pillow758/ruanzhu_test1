@@ -1,5 +1,6 @@
 import sys
-from PyQt6.QtWidgets import QApplication
+import logging
+from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtGui import QFont
 
 # 导入登录窗口
@@ -19,20 +20,33 @@ from web_view import apply_light_palette
 
 # 全局窗口引用
 main_window = None
+login_window = None
+
+
+def _start_workstation(factory, **kwargs):
+    """工作台显示成功后关闭登录页；启动失败时保留登录页。"""
+    global main_window
+    try:
+        window = factory(**kwargs)
+        window.show()
+    except Exception:
+        logging.getLogger(__name__).exception("工作台启动失败")
+        QMessageBox.critical(login_window, "工作台启动失败", "无法打开工作台，登录窗口已保留，请重试。")
+        return False
+    main_window = window
+    if login_window is not None:
+        login_window.close()
+    return True
 
 
 def start_admin_window(username, role):
     """启动管理员/调度员主界面"""
-    global main_window
-    main_window = LogisticsApp(username=username)
-    main_window.show()
+    return _start_workstation(LogisticsApp, username=username)
 
 
 def start_driver_window(driver_info):
     """启动驾驶员工作台"""
-    global main_window
-    main_window = DriverWorkstation(driver_info)
-    main_window.show()
+    return _start_workstation(DriverWorkstation, driver_info=driver_info)
 
 
 # ====================== 主程序 ======================
@@ -52,6 +66,7 @@ if __name__ == '__main__':
 
     # 创建登录窗口
     login = LoginWindow()
+    login_window = login
 
     # 连接信号
     login.admin_login_success.connect(start_admin_window)

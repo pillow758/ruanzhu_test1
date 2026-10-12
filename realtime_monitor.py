@@ -11,6 +11,7 @@ from web_view import EmbeddedWebView as QWebEngineView
 
 from database import db_manager
 from gps_store import get_positions, is_fresh, position_text
+from depot_settings import get_effective_depot
 
 AMAP_API_KEY = "ddbc01b09151f242d386549e5f472f79"
 AMAP_SECURITY_CODE = "776a13f6acec470076eb03e867c7e84d"
@@ -18,12 +19,8 @@ AMAP_SECURITY_CODE = "776a13f6acec470076eb03e867c7e84d"
 
 def _get_dc():
     """获取当前城市的配送中心坐标"""
-    try:
-        from main import CITIES, current_city
-        city = CITIES.get(current_city, CITIES['北京'])
-        return city['dc_lng'], city['dc_lat']
-    except Exception:
-        return 116.397, 39.908  # 北京默认
+    depot=get_effective_depot()
+    return depot['lng'],depot['lat']
 
 STATUS_MAP = {
     'online':   ('🟢 在线',  '#10b981'),

@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel, QFrame, QStackedWidget
 )
 from PyQt6.QtCore import QTimer, Qt, pyqtSlot, QObject, QUrl
-from PyQt6.QtWebEngineWidgets import QWebEngineView
+from web_view import EmbeddedWebView as QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "database/logistics.db")

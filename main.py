@@ -14,10 +14,12 @@ from PyQt6.QtGui import QFont, QColor, QPalette
 import pyqtgraph as pg
 from echarts_window import EChartsAnalysis
 from realtime_monitor import RealtimeMonitorWidget
+from gps_store import get_positions, is_fresh
+from gps_access import GpsAccessDialog, gps_service
 from order_manage import OrderManageWidget
 from cost_settings import CostSettingsDialog
 from PyQt6.QtWidgets import QTabWidget, QFileDialog
-from PyQt6.QtWebEngineWidgets import QWebEngineView
+from web_view import EmbeddedWebView as QWebEngineView, apply_light_palette
 import urllib.request
 import urllib.parse
 
@@ -37,6 +39,7 @@ os.makedirs(MAP_TEMP_DIR, exist_ok=True)
 def load_html_in_webview(web_view, html_content):
     """使用setHtml并设置baseUrl为https://localhost，使高德地图API接受合法origin"""
     web_view.setHtml(html_content, QUrl("https://localhost"))
+
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "database/logistics.db")
 DB_PATH = os.path.abspath(DB_PATH)
@@ -147,13 +150,16 @@ current_city = '北京'
 
 # ====================== 数据结构 ======================
 class Node:
-    def __init__(self, id, lng, lat, q, address=""):
+    def __init__(self, id, lng, lat, q, address="", earliest=None, latest=None, service_duration=10):
         """
         id: 节点ID
         lng: 经度
         lat: 纬度
         q: 需求量(kg)
         address: 地址描述
+        earliest: 时间窗最早时间（分钟，从 00:00 起算，如 8:00=480）
+        latest:   时间窗最晚时间（分钟）
+        service_duration: 服务时长（分钟）
         """
         self.id = str(id)
         self.x = lng  # 兼容原代码，x=经度
@@ -162,6 +168,9 @@ class Node:
         self.lat = lat
         self.q = q
         self.address = address
+        self.earliest = earliest
+        self.latest   = latest
+        self.service_duration = service_duration
 
 class Route:
     def __init__(self, nodes):
@@ -444,7 +453,7 @@ def trigger_change_address(target_id, new_lng, new_lat, new_address=""):
 
 # ====================== 高德地图视图组件 ======================
 class AMapViewWidget(QWidget):
-    """嵌入高德地图的视图组件"""
+    """嵌入高德地图的视图组件（显示设备上报位置）"""
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout()
@@ -452,6 +461,7 @@ class AMapViewWidget(QWidget):
         self.setLayout(layout)
 
         self.web_view = QWebEngineView()
+
         layout.addWidget(self.web_view, 1)
 
         # 初始化时加载空白地图
@@ -593,7 +603,7 @@ class AMapViewWidget(QWidget):
                         var origin  = new AMap.LngLat(route.path[0][0], route.path[0][1]);
                         var dest    = new AMap.LngLat(route.path[route.path.length-1][0], route.path[route.path.length-1][1]);
                         var wps     = route.path.slice(1, -1).map(function(p) {{
-                            return new AMap.WayPoint(new AMap.LngLat(p[0], p[1]));
+                            return new AMap.LngLat(p[0], p[1]);
                         }});
 
                         var driving = new AMap.Driving({{
@@ -663,8 +673,14 @@ class LogisticsApp(QMainWindow):
         self.vehicle_pos = []
         self.vehicle_colors = []
         self.unload_status = {}
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_plot)
+
+        # 车辆位置由司机设备上报，管理员电脑不参与定位。
+        self.gps_timer = QTimer(self)
+        self.gps_timer.timeout.connect(self._update_gps_label)
+        self.gps_timer.start(3000)
+        self._update_gps_label()
 
         # 初始化数据并开始动画
         self.init_data()
@@ -690,28 +706,36 @@ class LogisticsApp(QMainWindow):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         left_layout.addWidget(title)
 
-        # 城市选择器
-        city_frame = QFrame()
-        city_frame.setStyleSheet("background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;")
-        city_layout = QHBoxLayout(city_frame)
-        city_layout.setContentsMargins(8, 6, 8, 6)
-        city_lbl = QLabel("🌆 城市：")
-        city_lbl.setStyleSheet("color:#1e40af;font:bold 12px SimSun;border:none;")
-        city_layout.addWidget(city_lbl)
-        self.city_combo = QComboBox()
-        self.city_combo.addItems(list(CITIES.keys()))
-        self.city_combo.setCurrentText(current_city)
-        self.city_combo.setStyleSheet("""
-            QComboBox {
-                background:#ffffff;color:#1e293b;border:1px solid #3b82f6;
-                border-radius:6px;padding:4px 8px;font:bold 12px SimSun;
+        # GPS 定位状态栏
+        gps_frame = QFrame()
+        gps_frame.setStyleSheet("background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;")
+        gps_layout = QHBoxLayout(gps_frame)
+        gps_layout.setContentsMargins(12, 8, 12, 8)
+
+        self.gps_status_dot = QLabel("●")
+        self.gps_status_dot.setStyleSheet("color: #f59e0b; font-size: 16px; border: none;")
+        gps_layout.addWidget(self.gps_status_dot)
+
+        self.gps_info_label = QLabel("等待司机设备上报")
+        self.gps_info_label.setStyleSheet("color:#1e40af;font:bold 12px SimSun;border:none;")
+        self.gps_info_label.setWordWrap(True)
+        gps_layout.addWidget(self.gps_info_label, 1)
+
+        self.gps_btn = QPushButton("📡 GPS接入")
+        self.gps_btn.setFixedHeight(32)
+        self.gps_btn.setStyleSheet("""
+            QPushButton {
+                background:#3b82f6; color:white; border:none;
+                border-radius:6px; padding:0 14px;
+                font:bold 12px SimSun;
             }
-            QComboBox::drop-down{border:none;}
-            QComboBox QAbstractItemView{background:#ffffff;color:#1e293b;selection-background-color:#dbeafe;selection-color:#1e40af;border:1px solid #bfdbfe;}
+            QPushButton:hover { background:#2563eb; }
+            QPushButton:pressed { background:#1d4ed8; }
         """)
-        self.city_combo.currentTextChanged.connect(self.on_city_changed)
-        city_layout.addWidget(self.city_combo, 1)
-        left_layout.addWidget(city_frame)
+        self.gps_btn.clicked.connect(self._do_gps_locate)
+        gps_layout.addWidget(self.gps_btn)
+
+        left_layout.addWidget(gps_frame)
 
         # 按钮组
         btn_data = [
@@ -956,9 +980,17 @@ class LogisticsApp(QMainWindow):
         # 配送中心
         node_dict['DC'] = Node('DC', dc_lng, dc_lat, 0, dc_name)
 
-        # 客户节点
-        for nid, lng, lat, q, addr in city['customers']:
-            node_dict[nid] = Node(nid, lng, lat, q, addr)
+        # 客户节点（自动分配时间窗：8:00–18:00 之间平均分布）
+        num_customers = len(city['customers'])
+        for idx, (nid, lng, lat, q, addr) in enumerate(city['customers']):
+            tw_start = 480 + idx * (600 // max(num_customers, 1))  # 8:00 起，每客户约1.5h间隔
+            tw_end   = tw_start + 120  # 2小时窗口
+            node_dict[nid] = Node(
+                nid, lng, lat, q, addr,
+                earliest=tw_start,
+                latest=tw_end,
+                service_duration=10
+            )
 
         # 设置pyqtgraph坐标范围
         self.plot_widget.setRange(
@@ -1168,6 +1200,25 @@ class LogisticsApp(QMainWindow):
         self.refresh_map()
         self.status_msg.setText(f"✅ 距离矩阵已更新（{mode_str}）")
         QMessageBox.information(self, "道路距离", f"距离矩阵已更新！\n模式：{mode_str}\n路线成本已重新计算。")
+
+    # ── 真实设备定位 ──────────────────────────────────
+    def _do_gps_locate(self):
+        GpsAccessDialog(self).exec()
+        self._update_gps_label()
+
+    def _update_gps_label(self):
+        positions = get_positions()
+        fresh = sum(is_fresh(p) for p in positions.values())
+        self.gps_info_label.setText(f"车辆定位 · 实时 {fresh} 辆 · 超时 {len(positions)-fresh} 辆")
+        self.gps_status_dot.setStyleSheet(
+            f"color: {'#10b981' if fresh else '#f59e0b'}; font-size: 16px; border: none;")
+
+    def closeEvent(self, event):
+        self.gps_timer.stop()
+        self.timer.stop()
+        self.realtime_widget.stop_refresh()
+        self.analysis_widget.timer.stop()
+        super().closeEvent(event)
 
     def assign_tasks_to_drivers(self):
         """分配任务给驾驶员"""
@@ -1506,21 +1557,6 @@ class LogisticsApp(QMainWindow):
         QMessageBox.information(self, "完成", f"已生成 {num} 个随机订单！\nID示例: {', '.join(new_ids[:5])}" +
                                 ("…" if num > 5 else ""))
 
-    def on_city_changed(self, city_name):
-        """切换城市"""
-        global current_city
-        if city_name not in CITIES:
-            return
-        current_city = city_name
-        reply = QMessageBox.question(
-            self, "切换城市",
-            f"切换到「{city_name}」将重新加载城市节点数据，是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self.init_data()
-            self.status_msg.setText(f"🌆 已切换至：{city_name}")
-
     def reset_system_silent(self):
         """静默重置系统（不弹确认框）"""
         global node_dict, active_routes, current_city
@@ -1537,7 +1573,11 @@ class LogisticsApp(QMainWindow):
 
 # ====================== 程序入口 ======================
 if __name__ == "__main__":
+    from database.init_db import init_database
+    init_database()
     app = QApplication(sys.argv)
+    apply_light_palette(app)
+    app.aboutToQuit.connect(gps_service.stop)
     app.setFont(QFont("SimSun", 10))
     window = LogisticsApp()
     window.show()

@@ -14,6 +14,8 @@ from driver_workstation import DriverWorkstation
 # 初始化数据库
 from database.init_db import init_database
 from database.db_manager import FONT_FAMILY
+from gps_access import gps_service
+from web_view import apply_light_palette
 
 # 全局窗口引用
 main_window = None
@@ -40,6 +42,8 @@ if __name__ == '__main__':
 
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+    apply_light_palette(app)
+    app.aboutToQuit.connect(gps_service.stop)
 
     # 设置全局字体：中文宋体 / 英文 Times New Roman
     global_font = QFont("SimSun", 9)

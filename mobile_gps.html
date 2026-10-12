@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>司机位置上报 · 智能物流调度</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:28px 20px;background:#f1f5f9;color:#1e293b;font:16px/1.7 system-ui,sans-serif}
+main{max-width:520px;margin:0 auto;background:white;padding:26px;border-radius:18px;box-shadow:0 8px 30px #cbd5e155}
+h1{font-size:24px;margin:0 0 12px}p{color:#64748b}button{width:100%;padding:15px;margin:8px 0;border:0;border-radius:10px;background:#2563eb;color:white;font:inherit;font-weight:600}
+button:disabled{opacity:.45}#stop{background:#475569}#status{background:#eff6ff;padding:16px;border-radius:10px;overflow-wrap:anywhere;white-space:pre-line}
+small{display:block;color:#64748b;margin-top:16px}
+</style>
+<main><h1>🚚 司机位置上报</h1><p id="driver"></p>
+<p>点击开始并允许手机定位后，当前位置将发送到调度中心。请保持页面在前台、手机屏幕常亮；锁屏或切到后台可能暂停上报。</p>
+<div id="status" role="status" aria-live="polite">尚未开始上报</div>
+<button id="start">开始上报手机位置</button><button id="stop" disabled>停止上报</button>
+<small>定位来自打开此页面的设备。请用司机手机打开链接。每 5 秒最多上报一次；网络恢复后自动继续。专属链接包含设备凭证，请仅交给对应司机。</small></main>
+<script>
+const params=new URLSearchParams(location.hash.slice(1));
+const driverId=params.get('driver_id'), token=params.get('token');
+history.replaceState(null,'',location.pathname); // 凭证只留在内存，不传入 URL 日志
+const status=document.getElementById('status'), start=document.getElementById('start'), stop=document.getElementById('stop');
+document.getElementById('driver').textContent=driverId ? '当前司机：'+driverId : '缺少司机接入链接';
+let watchId=null, latest=null, timer=null, inFlight=false, lastSample=0, session=0, wakeLock=null;
+function message(text){status.textContent=text;}
+if(!driverId||!token){start.disabled=true;message('链接缺少司机编号或凭证，请向调度中心索取新的专属链接。');}
+else if(!window.isSecureContext){start.disabled=true;message('手机定位需要 HTTPS。请使用调度中心生成的 HTTPS 链接。');}
+else if(!navigator.geolocation){start.disabled=true;message('此浏览器不支持定位，请换用手机系统浏览器。');}
+async function keepAwake(){try{if('wakeLock' in navigator && watchId!==null && document.visibilityState==='visible')wakeLock=await navigator.wakeLock.request('screen');}catch(e){}}
+function endSession(){session++; if(watchId!==null)navigator.geolocation.clearWatch(watchId);watchId=null;clearInterval(timer);timer=null;latest=null;lastSample=0;stop.disabled=true;start.disabled=false;if(wakeLock){wakeLock.release().catch(()=>{});wakeLock=null;}}
+async function upload(){
+  if(inFlight||watchId===null||!latest||latest.timestamp<=lastSample)return;
+  if(Date.now()-latest.timestamp>120000){message('等待手机重新获取位置，上次采样已超过 2 分钟。');return;}
+  const sample=latest, current=session, controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),12000);inFlight=true;
+  try{
+    const response=await fetch('/api/location',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},signal:controller.signal,body:JSON.stringify({driver_id:driverId,lng:sample.coords.longitude,lat:sample.coords.latitude,accuracy:sample.coords.accuracy,timestamp:sample.timestamp/1000,coord_system:'wgs84',source:'phone'})});
+    const result=await response.json();
+    if(current!==session)return;
+    if(!response.ok){if(response.status===401){endSession();start.disabled=true;message('凭证已失效，请向调度中心索取新的接入链接。');return;}throw new Error(result.error||'上报失败');}
+    lastSample=sample.timestamp;
+    message('已上报手机位置\n'+sample.coords.longitude.toFixed(6)+', '+sample.coords.latitude.toFixed(6)+'\n精度 ±'+Math.round(sample.coords.accuracy)+' 米\n采样 '+new Date(sample.timestamp).toLocaleTimeString()+' · 上报 '+new Date().toLocaleTimeString());
+  }catch(e){if(current===session)message('上报失败，将自动重试：'+e.message);}
+  finally{clearTimeout(timeout);inFlight=false;}
+}
+start.onclick=()=>{
+  session++;start.disabled=true;stop.disabled=false;message('正在请求手机定位，请允许定位权限…');
+  watchId=navigator.geolocation.watchPosition(pos=>{latest=pos;},err=>{
+    if(err.code===1){endSession();message('定位权限被拒绝。请在手机浏览器设置中允许此网站定位后重新开始。');}
+    else message('暂时无法获取手机位置，将继续尝试：'+err.message);
+  },{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+  timer=setInterval(upload,5000);keepAwake();
+};
+stop.onclick=()=>{endSession();message('已停止上报。调度中心会保留最后一次位置，并在超时后标记断开。');};
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')keepAwake();});
+window.addEventListener('pagehide',endSession);
+</script></html>

@@ -9,12 +9,14 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QUrl
 from PyQt6.QtGui import QFont, QColor, QIcon
-from PyQt6.QtWebEngineWidgets import QWebEngineView
+from web_view import EmbeddedWebView as QWebEngineView, apply_light_palette
+
+from gps_store import get_position, is_fresh, position_text
+from gps_access import GpsAccessDialog, gps_service
 
 from database.db_manager import (
     get_driver_tasks, update_task_status, report_exception,
     update_driver_status, get_driver_info, log_order_status_change,
-    update_driver_location
 )
 
 # 高德地图 API Key
@@ -279,7 +281,7 @@ class ExceptionDialog(QDialog):
 
 # ====================== 导航地图组件 ======================
 class NavigationMap(QWidget):
-    """导航地图组件 - 方案A：浅色UI"""
+    """导航地图组件 - 方案A：浅色UI（显示设备上报位置）"""
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout()
@@ -287,6 +289,7 @@ class NavigationMap(QWidget):
         self.setLayout(layout)
 
         self.web_view = QWebEngineView()
+
         layout.addWidget(self.web_view, 1)
 
         self.current_destination = None
@@ -381,8 +384,8 @@ class NavigationMap(QWidget):
         """导航到目的地（driver_lng/lat 默认使用当前城市DC坐标）"""
         if driver_lng is None or driver_lat is None:
             dc_lng, dc_lat, _ = self._get_dc()
-            driver_lng = driver_lng or dc_lng
-            driver_lat = driver_lat or dc_lat
+            driver_lng = dc_lng if driver_lng is None else driver_lng
+            driver_lat = dc_lat if driver_lat is None else driver_lat
         self.current_destination = (dest_lng, dest_lat, dest_name)
 
         html = f"""
@@ -449,6 +452,9 @@ class NavigationMap(QWidget):
                 }});
                 map.add(endMarker);
 
+                function updateDriverPosition(pos) {{
+                    startMarker.setPosition([pos[0], pos[1]]);
+                }}
                 // 使用 AMap.Driving 展示真实道路导航路径
                 AMap.plugin('AMap.Driving', function() {{
                     var driving = new AMap.Driving({{
@@ -496,7 +502,7 @@ class NavigationMap(QWidget):
         dc_lng, dc_lat, dc_name = self._get_dc()
         self.show_driver_at_dc(driver_lng, driver_lat, dc_lng, dc_lat, dc_name)
 
-    def show_driver_at_dc(self, driver_lng, driver_lat, dc_lng, dc_lat, dc_name):
+    def show_driver_at_dc(self, driver_lng, driver_lat, dc_lng, dc_lat, dc_name, accuracy=0):
         """在地图上同时显示配送中心和驾驶员位置"""
         html = f"""
         <!DOCTYPE html>
@@ -548,8 +554,8 @@ class NavigationMap(QWidget):
                     map: map
                 }});
 
-                // 驾驶员位置标记（蓝色，带精度圈）
-                new AMap.Marker({{
+                // 驾驶员位置标记
+                var driverMarker = new AMap.Marker({{
                     position: [{driver_lng}, {driver_lat}],
                     content: '<div style="position:relative;">' +
                         '<div style="background:#3b82f6;width:18px;height:18px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(59,130,246,0.6);"></div>' +
@@ -559,10 +565,10 @@ class NavigationMap(QWidget):
                     map: map
                 }});
 
-                // 精度圈
-                new AMap.Circle({{
+                // 使用设备上报的定位精度
+                var accuracyCircle = new AMap.Circle({{
                     center: [{driver_lng}, {driver_lat}],
-                    radius: 50,
+                    radius: {accuracy},
                     strokeColor: '#3b82f6',
                     strokeWeight: 1,
                     strokeOpacity: 0.5,
@@ -571,6 +577,15 @@ class NavigationMap(QWidget):
                     map: map
                 }});
 
+                function updateDriverPosition(pos) {{
+                    driverMarker.setPosition([pos[0], pos[1]]);
+                    accuracyCircle.setCenter([pos[0], pos[1]]);
+                    accuracyCircle.setRadius(pos[2]);
+                    accuracyCircle.setOptions({{strokeColor: pos[3] ? '#3b82f6' : '#f59e0b'}});
+                    document.querySelector('.gps-info').textContent =
+                        '车辆：' + pos[0].toFixed(6) + ', ' + pos[1].toFixed(6) +
+                        (pos[3] ? ' · 设备实时上报' : ' · 超时，最后位置');
+                }}
                 // 自动调整视野以包含两个标记
                 map.setFitView(null, false, [60, 60, 60, 60]);
             </script>
@@ -592,15 +607,23 @@ class DriverWorkstation(QMainWindow):
         self.setWindowTitle(f"🚛 驾驶员工作台 - {driver_info['name']}师傅")
         self.setGeometry(100, 100, 1200, 800)
 
+        # 未收到设备上报时，不生成虚假的车辆位置。
+        self.driver_lng = None
+        self.driver_lat = None
+        self._location = None
+        self._map_has_driver = False
+
         self.init_ui()
         self.apply_theme()
         self.load_tasks()
+
+        self._tick_gps()
 
         # 更新驾驶员状态为在线
         update_driver_status(self.driver_id, 'online')
 
         # 状态刷新定时器
-        self.timer = QTimer()
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_tasks)
         self.timer.start(30000)  # 30秒刷新一次
 
@@ -667,14 +690,15 @@ class DriverWorkstation(QMainWindow):
         gps_layout.setContentsMargins(12, 8, 12, 8)
 
         self.gps_status_dot = QLabel("●")
-        self.gps_status_dot.setStyleSheet("color: #94a3b8; font-size: 16px; border: none;")
+        self.gps_status_dot.setStyleSheet("color: #f59e0b; font-size: 16px; border: none;")
         gps_layout.addWidget(self.gps_status_dot)
 
-        self.gps_info_label = QLabel("GPS 未定位")
+        self.gps_info_label = QLabel("等待司机设备上报")
         self.gps_info_label.setStyleSheet("color: #64748b; font-size: 12px; border: none;")
+        self.gps_info_label.setWordWrap(True)
         gps_layout.addWidget(self.gps_info_label, 1)
 
-        self.gps_btn = QPushButton("📍 获取定位")
+        self.gps_btn = QPushButton("📡 手机接入")
         self.gps_btn.setFixedHeight(32)
         self.gps_btn.setStyleSheet("""
             QPushButton {
@@ -694,11 +718,11 @@ class DriverWorkstation(QMainWindow):
 
         left_layout.addWidget(gps_frame)
 
-        # GPS 模拟定时器（每 8 秒微调一次位置）
-        self.gps_timer = QTimer()
+        # 每 3 秒读取真实设备上报位置
+        self.gps_timer = QTimer(self)
         self.gps_timer.timeout.connect(self._tick_gps)
-        self.driver_lng = None
-        self.driver_lat = None
+        self.gps_timer.start(3000)
+        self._update_gps_label()
 
         # 任务标题
         task_header = QHBoxLayout()
@@ -968,18 +992,18 @@ class DriverWorkstation(QMainWindow):
 
         elif action == 'navigate':
             # 导航
-            if task['lng'] and task['lat']:
-                # 使用实时GPS位置（若有），否则使用默认DC坐标
-                drv_lng = self.driver_lng if self.driver_lng else 116.397
-                drv_lat = self.driver_lat if self.driver_lat else 39.908
+            if task['lng'] is not None and task['lat'] is not None:
+                self._tick_gps()
+                if not is_fresh(self._location):
+                    QMessageBox.warning(self, "等待定位", "请先用司机手机开始上报当前位置；未上报或位置超时，无法从车辆实际位置导航。")
+                    return
                 self.nav_map.navigate_to(
                     task['lng'], task['lat'],
                     f"{task['customer_name']} - {task['address']}",
-                    driver_lng=drv_lng,
-                    driver_lat=drv_lat
+                    driver_lng=self.driver_lng, driver_lat=self.driver_lat
                 )
-                # 更新驾驶员位置
-                update_driver_location(self.driver_id, task['lng'], task['lat'])
+                self._map_has_driver = True
+                # 导航只规划路线，不将车辆瞬移到目的地。
                 # 记录状态变更
                 log_order_status_change(
                     order_id=task.get('order_id', ''),
@@ -1052,74 +1076,47 @@ class DriverWorkstation(QMainWindow):
         """关闭时更新状态"""
         if self.gps_timer.isActive():
             self.gps_timer.stop()
+        self.timer.stop()
         update_driver_status(self.driver_id, 'offline')
         event.accept()
 
-    # ── GPS 定位方法 ─────────────────────────────────────
+    # ── 真实设备定位 ──────────────────────────────────
     def _do_gps_locate(self):
-        """触发 GPS 定位：将驾驶员定位到当前城市配送中心"""
-        import random
-        try:
-            from main import CITIES, current_city
-            city = CITIES.get(current_city, CITIES['北京'])
-            dc_lng, dc_lat = city['dc_lng'], city['dc_lat']
-            dc_name = city.get('dc_name', '配送中心')
-        except Exception:
-            dc_lng, dc_lat = 116.397, 39.908
-            dc_name = '配送中心'
-
-        # 驾驶员位于配送中心附近（约 200m 范围内随机偏移）
-        self.driver_lng = dc_lng + random.uniform(-0.002, 0.002)
-        self.driver_lat = dc_lat + random.uniform(-0.0015, 0.0015)
-
-        # 更新 UI
-        self.gps_status_dot.setStyleSheet("color: #10b981; font-size: 16px; border: none;")
-        self._update_gps_label()
-
-        # 写入数据库
-        update_driver_location(self.driver_id, self.driver_lng, self.driver_lat)
-
-        # 启动 GPS 持续更新
-        if not self.gps_timer.isActive():
-            self.gps_timer.start(8000)
-
-        # 在导航地图上显示驾驶员位置 + 配送中心标记
-        if self.nav_map.current_destination:
-            dest_lng, dest_lat, dest_name = self.nav_map.current_destination
-            self.nav_map.navigate_to(dest_lng, dest_lat, dest_name,
-                                     self.driver_lng, self.driver_lat)
-        else:
-            self.nav_map.show_driver_at_dc(self.driver_lng, self.driver_lat,
-                                           dc_lng, dc_lat, dc_name)
-
-        QMessageBox.information(self, "GPS 定位成功",
-            f"已定位到：{dc_name}\n\n"
-            f"配送中心坐标：{dc_lng:.5f}, {dc_lat:.5f}\n"
-            f"驾驶员位置：{self.driver_lng:.5f}, {self.driver_lat:.5f}\n"
-            f"精度：±{random.randint(5, 20)}m")
+        GpsAccessDialog(self, driver_id=self.driver_id).exec()
+        self._tick_gps()
 
     def _tick_gps(self):
-        """模拟 GPS 持续漂移（每次约 50-150m 随机移动）"""
-        import random
-        if self.driver_lng is None or self.driver_lat is None:
-            return
-        # 随机小步移动
-        self.driver_lng += random.uniform(-0.0008, 0.0008)
-        self.driver_lat += random.uniform(-0.0006, 0.0006)
-        update_driver_location(self.driver_id, self.driver_lng, self.driver_lat)
+        self._location = get_position(self.driver_id)
+        if self._location:
+            self.driver_lng = self._location['lng']
+            self.driver_lat = self._location['lat']
+            if not self._map_has_driver:
+                dc_lng, dc_lat, dc_name = self.nav_map._get_dc()
+                self.nav_map.show_driver_at_dc(self.driver_lng, self.driver_lat, dc_lng, dc_lat, dc_name,
+                                               self._location['accuracy'])
+                self._map_has_driver = True
+            self.nav_map.web_view.page().runJavaScript(
+                "if (typeof updateDriverPosition === 'function') updateDriverPosition(" +
+                json.dumps([self.driver_lng, self.driver_lat, self._location['accuracy'], is_fresh(self._location)]) + ");")
         self._update_gps_label()
 
     def _update_gps_label(self):
-        if self.driver_lng is not None:
-            self.gps_info_label.setText(
-                f"已定位  {self.driver_lng:.4f}, {self.driver_lat:.4f}")
+        self.gps_info_label.setText(position_text(self._location))
+        self.gps_info_label.setToolTip(
+            f"高德地图坐标：{self.driver_lng}, {self.driver_lat}" if self._location else "尚未收到该司机的真实位置")
+        color = '#10b981' if is_fresh(self._location) else '#f59e0b'
+        self.gps_status_dot.setStyleSheet(f"color: {color}; font-size: 16px; border: none;")
 
 
 # ====================== 测试入口 ======================
 if __name__ == "__main__":
     from PyQt6.QtWidgets import QApplication
 
+    from database.init_db import init_database
+    init_database()
     app = QApplication(sys.argv)
+    apply_light_palette(app)
+    app.aboutToQuit.connect(gps_service.stop)
 
     # 模拟驾驶员信息
     test_driver = {

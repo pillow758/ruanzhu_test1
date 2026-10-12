@@ -1,16 +1,16 @@
 """
-实时监控模块 - 显示所有在线驾驶员位置及模拟配送动画
+实时监控模块 - 只显示司机设备上报的位置
 """
 import json
-import math
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QFrame, QScrollArea, QPushButton, QSizePolicy
 )
 from PyQt6.QtCore import QTimer, Qt, QUrl
-from PyQt6.QtWebEngineWidgets import QWebEngineView
+from web_view import EmbeddedWebView as QWebEngineView
 
 from database import db_manager
+from gps_store import get_positions, is_fresh, position_text
 
 AMAP_API_KEY = "ddbc01b09151f242d386549e5f472f79"
 AMAP_SECURITY_CODE = "776a13f6acec470076eb03e867c7e84d"
@@ -39,11 +39,11 @@ class RealtimeMonitorWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.driver_positions = {}   # driver_id → {lng, lat}
-        self.driver_targets = {}     # driver_id → {lng, lat}
+        self._map_dc = None
         self.driver_info_cache = {}
         self._init_ui()
         self._load_data()
-        self._start_simulation()
+        self.refresh_timer.start(3000)
 
     # ------------------------------------------------------------------ UI
     def _init_ui(self):
@@ -110,9 +110,9 @@ class RealtimeMonitorWidget(QWidget):
 
         layout.addWidget(right, 1)
 
-        # 模拟定时器（每2秒）
-        self.sim_timer = QTimer(self)
-        self.sim_timer.timeout.connect(self._tick_simulation)
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._load_data)
+        self.web_view.loadFinished.connect(lambda ok: self._push_positions() if ok else None)
 
     # ---------------------------------------------------------------- Data
     def _load_data(self):
@@ -120,81 +120,15 @@ class RealtimeMonitorWidget(QWidget):
         drivers = db_manager.get_all_drivers_with_info()
         self.driver_info_cache = {d['driver_id']: d for d in drivers}
 
-        online_count = sum(1 for d in drivers if d['status'] != 'offline')
-
-        for d in drivers:
-            did = d['driver_id']
-            # 初始化位置：有位置用实际位置，否则用DC附近随机偏移
-            if d['lng'] and d['lat']:
-                self.driver_positions[did] = {'lng': d['lng'], 'lat': d['lat']}
-            else:
-                import random
-                dc_lng, dc_lat = _get_dc()
-                self.driver_positions[did] = {
-                    'lng': dc_lng + random.uniform(-0.03, 0.03),
-                    'lat': dc_lat + random.uniform(-0.02, 0.02)
-                }
-
-            # 为在线驾驶员设置目标位置（有任务则向目的地移动，否则随机漂移）
-            if d['status'] != 'offline':
-                self._assign_random_target(did)
-
+        positions = get_positions()
+        self.driver_positions = {did: p for did, p in positions.items() if did in self.driver_info_cache}
+        fresh_count = sum(is_fresh(p) for p in self.driver_positions.values())
         self.stats_label.setText(
-            f"在线 {online_count} 人 · 共 {len(drivers)} 名驾驶员"
+            f"实时上报 {fresh_count} 辆 · 共 {len(drivers)} 名驾驶员\n"
+            f"超时 {len(self.driver_positions)-fresh_count} 辆 · 未上报 {len(drivers)-len(self.driver_positions)} 辆"
         )
-
         self._rebuild_driver_cards(drivers)
         self._update_map()
-
-    def _assign_random_target(self, driver_id):
-        """为驾驶员分配一个随机目标位置（模拟城区目的地）"""
-        import random
-        dc_lng, dc_lat = _get_dc()
-        # 当前城市城区范围
-        target_lng = dc_lng + random.uniform(-0.08, 0.08)
-        target_lat = dc_lat + random.uniform(-0.06, 0.06)
-        self.driver_targets[driver_id] = {'lng': target_lng, 'lat': target_lat}
-
-    # ------------------------------------------------------------ Simulation
-    def _start_simulation(self):
-        self.sim_timer.start(2000)
-
-    def _tick_simulation(self):
-        """每次定时器触发，移动驾驶员向目标位置靠近"""
-        moved = False
-        for did, pos in list(self.driver_positions.items()):
-            info = self.driver_info_cache.get(did, {})
-            if info.get('status') == 'offline':
-                continue
-
-            target = self.driver_targets.get(did)
-            if not target:
-                self._assign_random_target(did)
-                target = self.driver_targets[did]
-
-            # 每次移动约 0.002 度（约 200 米）
-            step = 0.002
-            dlng = target['lng'] - pos['lng']
-            dlat = target['lat'] - pos['lat']
-            dist = math.sqrt(dlng**2 + dlat**2)
-
-            if dist < step:
-                # 到达目标，分配新目标
-                pos['lng'] = target['lng']
-                pos['lat'] = target['lat']
-                self._assign_random_target(did)
-                # 更新数据库
-                db_manager.update_driver_location(did, pos['lng'], pos['lat'])
-            else:
-                ratio = step / dist
-                pos['lng'] += dlng * ratio
-                pos['lat'] += dlat * ratio
-                db_manager.update_driver_location(did, pos['lng'], pos['lat'])
-
-            moved = True
-
-        if moved:
-            self._update_map()
 
     # --------------------------------------------------------------- Sidebar
     def _rebuild_driver_cards(self, drivers):
@@ -254,116 +188,91 @@ class RealtimeMonitorWidget(QWidget):
         stats_row.setStyleSheet("color:#64748b;font:11px SimSun;border:none;")
         card_layout.addWidget(stats_row)
 
+        location = QLabel(position_text(self.driver_positions.get(d['driver_id'])))
+        location.setWordWrap(True)
+        location.setStyleSheet("color:#64748b;font:11px SimSun;border:none;")
+        card_layout.addWidget(location)
         return card
 
     # ----------------------------------------------------------------- Map
-    def _update_map(self):
-        """更新地图HTML（所有驾驶员标记 + DC标记）"""
-        drivers_data = []
-        for d in self.driver_info_cache.values():
-            did = d['driver_id']
-            pos = self.driver_positions.get(did, {'lng': _get_dc()[0], 'lat': _get_dc()[1]})
-            status_text, status_color = STATUS_MAP.get(d['status'], ('未知', '#666'))
-            drivers_data.append({
-                'id': did,
-                'name': d['name'],
-                'plate': d['license_plate'],
-                'status': status_text,
-                'color': status_color,
-                'lng': pos['lng'],
-                'lat': pos['lat'],
-                'pending': d['pending_count'],
-                'completed': d['completed_count'],
-                'online': d['status'] != 'offline'
+    def _map_data(self):
+        result = []
+        for did, position in self.driver_positions.items():
+            driver = self.driver_info_cache[did]
+            result.append({
+                'id': did, 'name': driver['name'], 'plate': driver['license_plate'],
+                'lng': position['lng'], 'lat': position['lat'],
+                'accuracy': position['accuracy'], 'fresh': is_fresh(position),
+                'location': position_text(position),
+                'status': STATUS_MAP.get(driver['status'], ('未知', '#666'))[0],
             })
+        return result
 
-        # 计算地图中心（所有驾驶员位置的平均值）
-        online_drivers = [d for d in drivers_data if d['online']]
-        if online_drivers:
-            center_lng = sum(d['lng'] for d in online_drivers) / len(online_drivers)
-            center_lat = sum(d['lat'] for d in online_drivers) / len(online_drivers)
+    def _push_positions(self):
+        data = json.dumps(self._map_data(), ensure_ascii=False)
+        self.web_view.page().runJavaScript(
+            "if (typeof updateVehiclePositions === 'function') updateVehiclePositions(" + data + ");")
+
+    def _update_map(self):
+        dc = _get_dc()
+        if self._map_dc != dc:
+            self._map_dc = dc
+            self.web_view.setHtml(self._build_map_html(dc), QUrl("https://localhost"))
         else:
-            center_lng, center_lat = _get_dc()
+            self._push_positions()
 
-        html = self._build_map_html(drivers_data, center_lng, center_lat)
-        self.web_view.setHtml(html, QUrl("https://localhost"))
-
-    def _build_map_html(self, drivers_data, center_lng, center_lat):
-        dc_lng, dc_lat = _get_dc()
+    def _build_map_html(self, dc):
+        dc_lng, dc_lat = dc
         return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <style>
-                * {{ margin:0; padding:0; box-sizing:border-box; }}
-                body {{ background:#f0f4f8; }}
-                #map {{ width:100vw; height:100vh; }}
-            </style>
-        </head>
-        <body>
-            <div id="map"></div>
-            <script>
-                window._AMapSecurityConfig = {{
-                    securityJsCode: '{AMAP_SECURITY_CODE}'
-                }};
-            </script>
-            <script src="https://webapi.amap.com/maps?v=2.0&key={AMAP_API_KEY}"
-                onerror="document.getElementById('map').innerHTML=
-                    '<div style=&quot;display:flex;align-items:center;justify-content:center;height:100vh;color:#e74c3c;font-size:16px;font-family:SimSun;&quot;>⚠️ 地图加载失败，请检查网络</div>';">
-            </script>
-            <script>
-                var map = new AMap.Map('map', {{
-                    zoom: 11,
-                    center: [{center_lng}, {center_lat}],
-                    viewMode: '2D'
+        <!doctype html><html><meta charset="utf-8">
+        <style>body{{margin:0;font:14px sans-serif}}#map{{height:100vh}}
+        #notice{{position:absolute;top:12px;left:12px;z-index:100;background:white;padding:10px;border-radius:8px;color:#475569}}</style>
+        <div id="map"></div><div id="notice">等待司机设备上报 · 灰色为超时后的最后位置</div>
+        <script>window._AMapSecurityConfig={{securityJsCode:'{AMAP_SECURITY_CODE}'}};</script>
+        <script src="https://webapi.amap.com/maps?v=2.0&key={AMAP_API_KEY}"
+        onerror="document.getElementById('notice').textContent='地图加载失败，请检查网络和高德配置；车辆上报状态可查看右侧列表'"></script>
+        <script>
+        if (typeof AMap !== 'undefined') {{
+            var map=new AMap.Map('map',{{zoom:12,center:[{dc_lng},{dc_lat}],viewMode:'2D'}});
+            new AMap.Marker({{position:[{dc_lng},{dc_lat}],title:'配送中心',map:map}});
+            var markers={{}}, circles={{}}, infos={{}};
+            window.updateVehiclePositions=function(data){{
+                var ids=new Set(data.map(d=>d.id)), added=false;
+                Object.keys(markers).forEach(id=>{{if(!ids.has(id)){{
+                    map.remove([markers[id],circles[id]]);infos[id].close();
+                    delete markers[id];delete circles[id];delete infos[id];
+                }}}});
+                data.forEach(d=>{{
+                    var color=d.fresh?'#2563eb':'#94a3b8';
+                    var content=document.createElement('div');
+                    content.style.cssText='background:'+color+';color:white;padding:5px 9px;border:2px solid white;border-radius:18px;white-space:nowrap;box-shadow:0 2px 6px #0003';
+                    content.textContent='🚚 '+d.name;
+                    if(!markers[d.id]){{
+                        added=true;
+                        markers[d.id]=new AMap.Marker({{position:[d.lng,d.lat],map:map,offset:new AMap.Pixel(-20,-12)}});
+                        circles[d.id]=new AMap.Circle({{center:[d.lng,d.lat],map:map,strokeWeight:1,fillOpacity:.08}});
+                        infos[d.id]=new AMap.InfoWindow();
+                        markers[d.id].on('click',()=>infos[d.id].open(map,markers[d.id].getPosition()));
+                    }}
+                    markers[d.id].setPosition([d.lng,d.lat]);markers[d.id].setContent(content);
+                    circles[d.id].setCenter([d.lng,d.lat]);circles[d.id].setRadius(d.accuracy);
+                    circles[d.id].setOptions({{strokeColor:color,fillColor:color}});
+                    var info=document.createElement('div');
+                    info.style.cssText='white-space:pre-line;padding:8px;line-height:1.8';
+                    info.textContent=d.name+' · '+d.plate+'\\n'+d.status+'\\n'+d.location+'\\n高德坐标 '+d.lng.toFixed(6)+', '+d.lat.toFixed(6);
+                    infos[d.id].setContent(info);
                 }});
-
-                // 配送中心标记
-                new AMap.Marker({{
-                    position: [{dc_lng}, {dc_lat}],
-                    content: '<div style="background:#FFD700;width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:11px;border:2px solid #333;color:#333;">DC</div>',
-                    offset: new AMap.Pixel(-14, -14),
-                    map: map
-                }});
-
-                // 驾驶员标记
-                var driversData = {json.dumps(drivers_data)};
-                driversData.forEach(function(d) {{
-                    if (!d.online) return;
-                    var color = d.color === '#10b981' ? '#10b981' :
-                                d.color === '#3b82f6' ? '#3b82f6' :
-                                d.color === '#f59e0b' ? '#f59e0b' : '#6b7280';
-                    var html = '<div style="position:relative;">' +
-                        '<div style="background:' + color + ';width:22px;height:22px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.4);"></div>' +
-                        '<div style="position:absolute;top:-22px;left:50%;transform:translateX(-50%);white-space:nowrap;background:rgba(0,0,0,0.75);color:white;padding:2px 6px;border-radius:4px;font-size:11px;font-family:SimSun;">' + d.name + '</div>' +
-                        '</div>';
-                    var marker = new AMap.Marker({{
-                        position: [d.lng, d.lat],
-                        content: html,
-                        offset: new AMap.Pixel(-11, -11),
-                        map: map
-                    }});
-
-                    var infoHtml = '<div style="font-family:SimSun;padding:4px;min-width:160px;">' +
-                        '<div style="font-weight:bold;font-size:14px;color:#333;">🚛 ' + d.name + '</div>' +
-                        '<div style="color:#666;font-size:12px;margin:3px 0;">车牌：' + d.plate + '</div>' +
-                        '<div style="color:#666;font-size:12px;">状态：' + d.status + '</div>' +
-                        '<div style="color:#666;font-size:12px;">已完成：' + d.completed + ' 单</div>' +
-                        '<div style="color:#666;font-size:12px;">待配送：' + d.pending + ' 单</div>' +
-                        '</div>';
-                    var infoWindow = new AMap.InfoWindow({{
-                        content: infoHtml,
-                        offset: new AMap.Pixel(0, -24)
-                    }});
-                    marker.on('click', function() {{
-                        infoWindow.open(map, marker.getPosition());
-                    }});
-                }});
-            </script>
-        </body>
-        </html>
+                document.getElementById('notice').textContent=data.length?
+                    '设备上报 '+data.length+' 辆 · 实时 '+data.filter(d=>d.fresh).length+' 辆 · 灰色为超时后的最后位置':'等待司机设备上报';
+                if(added)map.setFitView(null,false,[60,60,60,60]);
+            }};
+        }}
+        </script></html>
         """
 
-    def stop_simulation(self):
-        self.sim_timer.stop()
+    def stop_refresh(self):
+        self.refresh_timer.stop()
+
+    def closeEvent(self, event):
+        self.stop_refresh()
+        super().closeEvent(event)

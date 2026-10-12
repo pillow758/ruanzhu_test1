@@ -85,9 +85,23 @@ def init_database():
         demand REAL,
         status TEXT DEFAULT 'pending',
         assigned_driver TEXT,
+        earliest_time TEXT,
+        latest_time TEXT,
+        service_duration INTEGER DEFAULT 10,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    # 为已有数据库添加时间窗列（兼容升级）
+    for col, col_type in [
+        ('earliest_time', 'TEXT'),
+        ('latest_time',   'TEXT'),
+        ('service_duration', 'INTEGER DEFAULT 10'),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE orders ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
 
     # ====================== 路线表 ======================
     cursor.execute("""
@@ -121,6 +135,7 @@ def init_database():
         ('toll_per_km',        0.5, '过路费（元/km）'),
         ('maintenance_per_km', 0.3, '车辆维护费（元/km）'),
         ('driver_wage',       30.0, '驾驶员工资（元/小时）'),
+        ('tw_penalty_per_min', 5.0, '时间窗惩罚（元/分钟，软时间窗迟到单位成本）'),
     ]
     for key, val, desc in default_costs:
         cursor.execute("""
@@ -186,6 +201,9 @@ def init_database():
         """, ("D002", hashed_pw, "李师傅", "13900139000", "京B67890", "小型货车", "offline", "中班"))
         print("默认驾驶员已创建: D002 / 123456")
 
+    conn.commit()
+    from gps_store import ensure_schema
+    ensure_schema(conn)
     conn.commit()
     conn.close()
 
